@@ -144,6 +144,15 @@ inputs:
       tagging. CLI flags can tighten this but never relax it.
     required: false
     default: "label"
+  include_linked_issues:
+    description: >-
+      Fetch the issues and pull requests the change refers to (title, body, commits, discussion) and
+      give the model their symptom and status, plus a linked_issue tool for the full text.
+    required: false
+    default: "true"
+  max_linked_issues:
+    required: false
+    default: "8"
   include_discussion:
     description: >-
       Give the model the existing conversation, inline review threads and review states. Set to
@@ -291,6 +300,8 @@ runs:
         INPUT_GENERATE_TEST_PLAN: ${{ inputs.generate_test_plan }}
         INPUT_INCLUDE_CI: ${{ inputs.include_ci }}
         INPUT_LOCKDOWN: ${{ inputs.lockdown }}
+        INPUT_INCLUDE_LINKED_ISSUES: ${{ inputs.include_linked_issues }}
+        INPUT_MAX_LINKED_ISSUES: ${{ inputs.max_linked_issues }}
         INPUT_INCLUDE_DISCUSSION: ${{ inputs.include_discussion }}
         INPUT_MAX_DISCUSSION_CHARS: ${{ inputs.max_discussion_chars }}
         INPUT_REVIEW_PROFILE: ${{ inputs.review_profile }}

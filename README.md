@@ -251,6 +251,19 @@ short, and one line per changed function naming its callers by area with example
 ranked by changed lines and kept within `prefetch_chars` (default 24,000); whatever does not fit is
 named so the model can fetch it with `read_file`. Set `prefetch_chars: "0"` to disable.
 
+### Linked issues and pull requests
+
+References in the PR title and body, the commit messages and the discussion (`#123`,
+`owner/repo#123`, GitHub URLs) are resolved, up to `max_linked_issues` of them (default 8). The
+opening message carries one entry per item: how it relates (fixes, closes, follow-up to, see), its
+kind and status (open, closed, merged), labels, title, author with trust, and the start of its
+body, so the model knows the symptom a fix claims to address and what a referenced PR did. The
+`linked_issue` tool returns the full body and comments of any of them, or of any other number in
+the repository. The working rules ask the model to compare the scenario an issue reports with the
+change and say so when the change does not address it. Everything is sanitized and framed as
+untrusted data like the rest of the PR text. Disable with `include_linked_issues: "false"` or
+`--no-linked`.
+
 ### CI results
 
 The model sees the head commit's check runs and commit statuses in the opening message and can
@@ -434,6 +447,7 @@ trailer` when precision matters more than size.
 | `src/zephyr_reviewer/review/pipeline.py` | Specialist pipeline: planner, accounting rules, hard cases, review map |
 | `src/zephyr_reviewer/review/profiles/stages/` | Stage prompts, including the verification false-positive guide |
 | `src/zephyr_reviewer/review/discussion.py` | PR comments and threads with author trust and resolution state; digest and `pr_discussion` tool |
+| `src/zephyr_reviewer/review/linked.py` | Issues and PRs the change refers to; digest and `linked_issue` tool |
 | `src/zephyr_reviewer/review/render.py`, `publish.py`, `github_api.py` | Comment rendering and delivery |
 | `src/zephyr_reviewer/benchmark/` | Dataset mining from fix history, LLM judge, runner and report |
 | `src/zephyr_reviewer/cli.py` | `serve`, `review`, `post`, `benchmark`, `tools`, `call` |

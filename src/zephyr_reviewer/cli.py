@@ -21,6 +21,7 @@ from .review.ci import CI_FAILURE_LOGS_TOOL, CI_STATUS_TOOL, CIResults
 from .review.config import ReviewConfig
 from .review.discussion import PR_DISCUSSION_TOOL, Discussion, trust_level
 from .review.github_api import GitHub, PullRequest, pr_number_from_event
+from .review.linked import LINKED_ISSUE_TOOL, Linked, load_linked
 from .review.mcp_client import ToolBridge, stdio_params
 from .review.openrouter import OpenRouter
 from .review.pipeline import hunk_text, run_pipeline
@@ -75,6 +76,7 @@ def _add_review_args(p: argparse.ArgumentParser) -> None:
         help="Handling of PR text from users without push access (can only tighten the operator setting)",
     )
     p.add_argument("--no-ci", action="store_true", help="Do not fetch CI results")
+    p.add_argument("--no-linked", action="store_true", help="Do not fetch issues and PRs the change refers to")
     p.add_argument(
         "--no-discussion",
         action="store_true",
@@ -140,6 +142,8 @@ def _config(args: argparse.Namespace) -> ReviewConfig:
         cfg.generate_test_plan = True
     if args.no_ci:
         cfg.include_ci = False
+    if args.no_linked:
+        cfg.include_linked = False
     if args.no_discussion:
         cfg.include_discussion = False
     if args.show_details:
@@ -258,6 +262,26 @@ def _load_discussion(cfg: ReviewConfig, gh: GitHub | None, pr: PullRequest) -> D
     return d
 
 
+def _load_linked(
+    cfg: ReviewConfig, gh: GitHub | None, pr: PullRequest, intel: SourceIntel, discussion: Discussion | None
+) -> Linked | None:
+    """Issues and PRs referenced by the title, body, commit messages and discussion."""
+    if gh is None or not pr.number or not cfg.include_linked:
+        return None
+    texts: list[tuple[str, str]] = [("title", pr.title), ("description", pr.body)]
+    texts += [("commit " + c.short, c.subject + "\n" + c.body) for c in intel.commits]
+    if discussion is not None:
+        texts += [("comment", c.body) for c in [*discussion.conversation, *discussion.inline, *discussion.reviews]]
+    linked = load_linked(
+        gh, texts, repo_slug=cfg.repo_slug, own_number=pr.number, max_items=cfg.max_linked_items, lockdown=cfg.lockdown
+    )
+    if linked.empty:
+        log("linked issues/PRs: none referenced")
+        return None
+    log("linked issues/PRs: " + ", ".join(f"{it.ref.label} ({it.status or it.kind})" for it in linked.items))
+    return linked
+
+
 def _load_ci(cfg: ReviewConfig, gh: GitHub | None, pr: PullRequest) -> CIResults | None:
     if gh is None or not pr.number or not cfg.include_ci:
         return None
@@ -273,6 +297,7 @@ async def _run(
     discussion: Discussion | None = None,
     ci: CIResults | None = None,
     author_trust: str = "",
+    linked: Linked | None = None,
 ):
     profile = load_profile(cfg.profile)
     mode = cfg.effective_pipeline()
@@ -296,8 +321,11 @@ async def _run(
         author_trust=author_trust,
         ci_summary=ci.summary_line() if ci else "",
         prefetched=prefetched,
+        linked=linked.digest(cfg.max_linked_chars) if linked else None,
     )
     extra_tools = [LocalTool(PR_DISCUSSION_TOOL, discussion.tool_handler)] if discussion else []
+    if linked:
+        extra_tools.append(LocalTool(LINKED_ISSUE_TOOL, linked.tool_handler))
     if ci:
         extra_tools += [LocalTool(CI_STATUS_TOOL, ci.status_tool), LocalTool(CI_FAILURE_LOGS_TOOL, ci.logs_tool)]
     changed = {f.path: f.new_side_lines for f in intel.files}
@@ -407,7 +435,18 @@ def cmd_review(args: argparse.Namespace) -> int:
     log(f"reviewing {len(intel.files)} file(s), {len(intel.commits)} commit(s): {cfg.base[:12]}..{cfg.head[:12]}")
     author_trust = trust_level(gh, pr.author, False) if gh is not None and cfg.lockdown != "off" and pr.author else ""
     try:
-        run = asyncio.run(_run(cfg, pr, intel, _load_discussion(cfg, gh, pr), _load_ci(cfg, gh, pr), author_trust))
+        discussion = _load_discussion(cfg, gh, pr)
+        run = asyncio.run(
+            _run(
+                cfg,
+                pr,
+                intel,
+                discussion,
+                _load_ci(cfg, gh, pr),
+                author_trust,
+                _load_linked(cfg, gh, pr, intel, discussion),
+            )
+        )
     except Exception as exc:  # noqa: BLE001 - report, save what we can, exit non-zero
         from .review.agent import RunResult
         from .review.openrouter import Usage

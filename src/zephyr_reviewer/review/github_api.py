@@ -115,8 +115,12 @@ class GitHub:
             url = resp.links.get("next", {}).get("url")
         return out
 
-    def issue_comments(self, number: int) -> list[dict[str, Any]]:
-        return self._paginate(f"/repos/{self.repo}/issues/{number}/comments")
+    def issue(self, number: int, repo: str | None = None) -> dict[str, Any]:
+        """An issue or pull request (the issues endpoint serves both; PRs carry a `pull_request` key)."""
+        return self._request("GET", f"/repos/{repo or self.repo}/issues/{number}").json()
+
+    def issue_comments(self, number: int, repo: str | None = None) -> list[dict[str, Any]]:
+        return self._paginate(f"/repos/{repo or self.repo}/issues/{number}/comments")
 
     def review_comments(self, number: int) -> list[dict[str, Any]]:
         return self._paginate(f"/repos/{self.repo}/pulls/{number}/comments")
