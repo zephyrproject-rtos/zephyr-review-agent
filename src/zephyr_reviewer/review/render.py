@@ -62,27 +62,43 @@ def _location(f: Finding, repo: str, sha: str, api_url: str) -> str:
     return f"[{label}]({file_url(repo, sha, f.file, f.line or None, api_url)})"
 
 
+def _sentence(text: str) -> str:
+    text = " ".join((text or "").split())
+    if not text:
+        return ""
+    first = text.split()[0].rstrip(",.;:")
+    if first.isalpha() and first.islower():  # a plain word, not an identifier such as foo_transfer or k_sem_give
+        text = text[0].upper() + text[1:]
+    if text[-1] not in ".!?":
+        text += "."
+    return text
+
+
+def finding_text(f: Finding) -> str:
+    """The finding's body as posted: the problem, with the trigger and impact folded in as clauses when
+    they add something, and nothing else. Short enough to skim, specific enough to act on."""
+    problem = _sentence(f.problem)
+    extras = []
+    low = problem.lower()
+    if f.trigger and f.trigger.lower().rstrip(".") not in low:
+        t = f.trigger.strip().rstrip(".")
+        extras.append(
+            t
+            if t[:1].isupper() and t.split()[0].lower() in ("when", "if", "on", "only")
+            else f"Happens when {t[:1].lower() + t[1:]}"
+        )
+    if f.impact and f.impact.lower().rstrip(".") not in low:
+        extras.append(f.impact.strip().rstrip("."))
+    return " ".join([problem, *(_sentence(e) for e in extras)]).strip()
+
+
 def _finding_md(f: Finding, idx: int, repo: str, sha: str, api_url: str) -> str:
-    lines = [
-        f"#### {idx}. {f.title}",
-        "",
-        f"{SEVERITY_BADGE.get(f.severity, f.severity)}{' (speculative)' if f.speculative else ''} · "
-        f"{f.category.replace('_', ' ')} · {_location(f, repo, sha, api_url)} · confidence {f.confidence}",
-        "",
-    ]
-    lines += [f"**Problem:** {f.problem}", ""]
-    if f.trigger:
-        lines += [f"**Trigger:** {f.trigger}", ""]
-    if f.impact:
-        lines += [f"**Impact:** {f.impact}", ""]
+    badge = f"{SEVERITY_BADGE.get(f.severity, f.severity)}{' (speculative)' if f.speculative else ''}"
+    lines = [f"#### {idx}. {f.title}", "", f"{badge} · {_location(f, repo, sha, api_url)}", "", finding_text(f), ""]
     if f.recommendation:
-        lines += [f"**Recommendation:** {f.recommendation}", ""]
+        lines += [f"**Fix:** {_sentence(f.recommendation)}", ""]
     if f.suggested_code.strip():
         lines += [f"```{_lang(f.file)}", f.suggested_code.rstrip(), "```", ""]
-    if f.evidence:
-        lines += [f"<sub>Evidence: {f.evidence}</sub>", ""]
-    if f.notes:
-        lines += ["<sub>" + "; ".join(f.notes) + "</sub>", ""]
     return "\n".join(lines)
 
 
@@ -195,30 +211,17 @@ def inline_marker(tag: str, key: str) -> str:
 
 
 def inline_comments(review: Review, tag: str = "zephyr-reviewer") -> list[dict[str, Any]]:
-    """One review comment per anchored finding, self-contained, carrying a hidden marker for dedup."""
+    """One review comment per anchored finding, self-contained and short, carrying a hidden marker for dedup."""
     comments = []
     for f in review.findings:
         if not f.inline:
             continue
-        body = [
-            inline_marker(tag, finding_key(f)),
-            f"**{f.title}**",
-            "",
-            f"{SEVERITY_BADGE.get(f.severity, f.severity)}{' (speculative)' if f.speculative else ''} · "
-            f"{f.category.replace('_', ' ')}",
-            "",
-            f.problem,
-        ]
-        if f.trigger:
-            body += ["", f"**Trigger:** {f.trigger}"]
-        if f.impact:
-            body += ["", f"**Impact:** {f.impact}"]
+        badge = f"{SEVERITY_BADGE.get(f.severity, f.severity)}{' (speculative)' if f.speculative else ''}"
+        body = [inline_marker(tag, finding_key(f)), f"**{f.title}** · {badge}", "", finding_text(f)]
         if f.recommendation:
-            body += ["", f"**Recommendation:** {f.recommendation}"]
+            body += ["", f"**Fix:** {_sentence(f.recommendation)}"]
         if f.suggested_code.strip():
             body += ["", "```suggestion", f.suggested_code.rstrip(), "```"]
-        if f.evidence:
-            body += ["", f"<sub>Evidence: {f.evidence}</sub>"]
         body += ["", f"<sub>{ADVISORY_SHORT}</sub>"]
         c: dict[str, Any] = {"path": f.file, "line": f.end_line or f.line, "side": "RIGHT", "body": "\n".join(body)}
         if f.end_line and f.end_line > f.line:

@@ -197,6 +197,8 @@ async def test_agent_investigates_then_submits(mini_repo):
     assert "🛑 **Request changes**" in body
     assert "blob/" + mini_repo["head"] + "/drivers/i2c/i2c_foo.c#L17" in body
     assert "```c\n\tif (ret < 0) {" in body
+    assert "Evidence" not in body and "**Trigger:**" not in body and "**Problem:**" not in body
+    assert "shown in the summary only" not in body  # internal notes stay in review.json
     assert "### Test gaps" in body and "2 tool call(s)" in body and "$0.025" in body
 
     inline = inline_comments(review)

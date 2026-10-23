@@ -68,8 +68,14 @@ def test_inline_comments_are_self_contained_and_marked():
     lock = comments[0]
     key = finding_key(review.findings[0])
     assert lock["body"].startswith(inline_marker("zephyr-reviewer", key))
-    assert "**Early return leaks the bus lock**" in lock["body"] and "**Trigger:**" in lock["body"]
-    assert "```suggestion" in lock["body"] and "Evidence: read_file" in lock["body"]
+    assert lock["body"].splitlines()[1] == "**Early return leaks the bus lock** · 🟠 high"
+    assert "Evidence" not in lock["body"] and "**Trigger:**" not in lock["body"] and "**Impact:**" not in lock["body"]
+    expected = (
+        "foo_transfer returns on error before k_sem_give, so the semaphore is never released. "
+        "Happens when any failed transfer. Every later transfer blocks forever."
+    )
+    assert expected in lock["body"]
+    assert "**Fix:** Release the lock before returning." in lock["body"] and "```suggestion" in lock["body"]
     assert lock["body"].rstrip().endswith("verify before acting on it.</sub>")
     assert lock["start_line"] == 17 and lock["line"] == 19
     # The key depends on location and title only, so a re-run with reworded prose still matches.

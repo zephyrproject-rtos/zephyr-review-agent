@@ -44,6 +44,11 @@ first, then submit. Concretely:
 - Speculative findings. When one link in a finding's trigger path is an assumption you could not
   verify, set `speculative: true` and state the assumption; severity is capped at medium. Report
   it rather than drop it: "probably unreachable" is not a reason to bury a bug.
+- Write for a maintainer skimming on GitHub. Each finding is posted at its line, so `problem` is one
+  or two plain sentences without file names, line numbers or long symbol lists; `trigger` and
+  `impact` are short clauses or empty when the problem already says it; `recommendation` is one
+  sentence, with code in `suggested_code`. Go into detail only when the fix cannot be understood
+  without it. `evidence` is kept for the record and is never posted.
 - Issues only. `summary` states the result and the key problem, not what the change does.
   `test_assessment`, `commit_message_assessment` and `discussion_assessment` are empty unless
   something is missing or wrong. Never write "tests are adequate" or "no issues found" in them.

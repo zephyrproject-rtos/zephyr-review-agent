@@ -90,14 +90,27 @@ SUBMIT_REVIEW_TOOL: dict[str, Any] = {
                             "severity": {"type": "string", "enum": SEVERITIES},
                             "category": {"type": "string", "enum": CATEGORIES},
                             "title": {"type": "string", "description": "One short sentence naming the problem."},
-                            "problem": {"type": "string", "description": "The concrete issue."},
+                            "problem": {
+                                "type": "string",
+                                "description": "One or two plain sentences a maintainer can act on. The comment is "
+                                "anchored to the line, so do not repeat file names or line numbers; name a "
+                                "function or symbol only when the sentence needs it.",
+                            },
                             "trigger": {
                                 "type": "string",
-                                "description": "Configuration, input, timing, architecture "
-                                "or execution path required to expose it.",
+                                "description": "One short clause: the configuration, input, timing or path that "
+                                "exposes it. Empty when the problem sentence already says so.",
                             },
-                            "impact": {"type": "string", "description": "What breaks, or why it matters."},
-                            "recommendation": {"type": "string", "description": "A practical fix or direction."},
+                            "impact": {
+                                "type": "string",
+                                "description": "One short clause: what breaks. Empty when the problem sentence "
+                                "already says so.",
+                            },
+                            "recommendation": {
+                                "type": "string",
+                                "description": "One sentence saying what to change; put code in suggested_code "
+                                "rather than in prose.",
+                            },
                             "suggested_code": {
                                 "type": "string",
                                 "description": "Drop-in replacement for the cited "
