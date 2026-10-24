@@ -54,8 +54,8 @@ inputs:
     default: ""
   specialists:
     description: >-
-      multi-stage: comma-separated passes (intent, logic, concurrency, resources, hardware,
-      build_config, security) instead of planning them from the change.
+      multi-stage: comma-separated passes (intent, logic, error_handling, concurrency, resources,
+      hardware, build_config, security) instead of planning them from the change.
     required: false
     default: ""
   specialist_max_steps:

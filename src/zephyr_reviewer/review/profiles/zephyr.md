@@ -83,7 +83,9 @@ Do not object to an API only because another design is aesthetically preferable.
 
 * Ignored return values that can represent real failures
 * Incorrect error propagation; inconsistent errno values
-* Assertions used for recoverable runtime conditions
+* Assertions used where a runtime check is needed: `__ASSERT` is compiled out in production builds, so a
+  condition reachable at run time (allocation failure, input from a bus, peer or user, hardware state,
+  timeout) needs a check that returns an error; keep assertions for true invariants
 * Missing cleanup after partial failure
 * Integer overflow, truncation, signedness; bounds validation
 

@@ -5,8 +5,8 @@ You trace every changed execution path as a static analysis engine would.
 Look for:
 - Logic errors: inverted conditions, off-by-one, wrong loop bounds, wrong operator, unreachable
   code, fall-through.
-- Unhandled error returns and inconsistent errno values; error paths that skip cleanup or return
-  the wrong value; checks of the wrong variable.
+- Checks of the wrong variable; conditions on return codes that test the wrong thing. (Unchecked
+  returns, errno values, cleanup on error paths and assertions belong to the error-handling stage.)
 - NULL dereference where a value can actually be NULL on some path (reading a pointer field is not
   a dereference; accessing its contents is).
 - Integer overflow, truncation, signedness and bounds problems in sizes, lengths and indexes.

@@ -37,7 +37,7 @@ from .schema import (
     parse_review,
 )
 
-SPECIALISTS = ["intent", "logic", "concurrency", "resources", "hardware", "build_config", "security"]
+SPECIALISTS = ["intent", "logic", "error_handling", "concurrency", "resources", "hardware", "build_config", "security"]
 ALWAYS = ["intent", "logic"]
 
 _CONCURRENCY_HINT = re.compile(
@@ -65,6 +65,8 @@ def plan_specialists(files: list[str], added_text: str) -> list[str]:
     chosen = list(ALWAYS)
     c_code = any(f.endswith((".c", ".h", ".S")) for f in files)
     paths = " ".join(files)
+    if c_code:
+        chosen.append("error_handling")  # return codes, cleanup on error paths, assertions vs runtime checks
     if c_code and (_CONCURRENCY_HINT.search(added_text) or re.search(r"\b(kernel|arch)/", paths)):
         chosen.append("concurrency")
     if c_code and (_RESOURCE_HINT.search(added_text) or re.search(r"\b(subsys|drivers|lib)/", paths)):

@@ -26,10 +26,18 @@ from zephyr_reviewer.review.schema import parse_review
 
 def test_planner_picks_passes_from_the_change():
     assert plan_specialists(["doc/x.rst"], "") == ["intent", "logic"]
-    assert plan_specialists(["kernel/sched.c"], "z_sched_lock();") == ["intent", "logic", "concurrency"]
+    assert plan_specialists(["kernel/sched.c"], "z_sched_lock();") == [
+        "intent",
+        "logic",
+        "error_handling",
+        "concurrency",
+    ]
+    assert plan_specialists(["arch/arm/core/fault.S"], "") == ["intent", "logic", "error_handling", "concurrency"]
+    assert plan_specialists(["lib/os/clock.c"], "") == ["intent", "logic", "error_handling", "resources", "security"]
     assert plan_specialists(["drivers/i2c/i2c_foo.c", "drivers/i2c/Kconfig"], "k_sem_take(&l, K_FOREVER);") == [
         "intent",
         "logic",
+        "error_handling",
         "concurrency",
         "resources",
         "hardware",
@@ -39,6 +47,7 @@ def test_planner_picks_passes_from_the_change():
     assert "build_config" in plan_specialists(["boards/vnd/b/b.dts"], "")
     assert "hardware" not in plan_specialists(["boards/vnd/b/b.dts"], "")  # no C code
     assert plan_specialists(["dts/bindings/i2c/x.yaml"], "") == ["intent", "logic", "build_config"]
+    assert "error_handling" in plan_specialists(["subsys/net/ip/tcp.c"], "")
 
 
 def _finding(title="t", **kw):
@@ -346,7 +355,15 @@ async def test_pipeline_end_to_end(mini_repo):
 
     assert run.review is not None
     rm = run.review_map
-    assert rm["specialists"] == ["intent", "logic", "concurrency", "resources", "hardware", "build_config"]
+    assert rm["specialists"] == [
+        "intent",
+        "logic",
+        "error_handling",
+        "concurrency",
+        "resources",
+        "hardware",
+        "build_config",
+    ]
     # Specialist models vs verification models.
     spec_models = {
         r["model"] for r in router.requests if "submit_concerns" in {t["function"]["name"] for t in r["tools"]}
@@ -377,7 +394,8 @@ async def test_pipeline_end_to_end(mini_repo):
     assert run.review.verdict == "request_changes"
     assert run.review.summary == "The error path leaks the bus lock." and run.review.test_assessment == ""
     stage_names = [s["stage"] for s in run.stages]
-    assert stage_names[:6] == rm["specialists"] and "verification" in stage_names and "report" in stage_names
+    n = len(rm["specialists"])
+    assert stage_names[:n] == rm["specialists"] and "verification" in stage_names and "report" in stage_names
     assert sum(1 for s in stage_names if s.startswith("H")) == 2
     assert run.usage.requests == len(router.requests) and run.steps == sum(s["steps"] for s in run.stages)
     assert {t.get("stage") for t in run.transcript} >= {"intent", "verification", "report", "H1", "H2"}
@@ -431,3 +449,25 @@ async def test_pipeline_with_no_concerns_skips_verification(mini_repo):
     assert run.review.verdict == "approve"  # request_changes without findings is corrected
     assert [s["stage"] for s in run.stages] == ["intent", "report"]
     assert run.review_map["concerns"] == [] and run.errors == []
+
+
+def test_error_handling_stage_prompt_covers_returns_and_asserts():
+    from zephyr_reviewer.review.pipeline import _stage_prompt
+
+    text = _stage_prompt("error_handling")
+    assert text.startswith("# Stage: error handling and assertions")
+    for must in (
+        "device_is_ready",
+        "k_sem_take",
+        "net_buf_alloc",
+        "errno",
+        "release what the success path would release",
+        "CONFIG_ASSERT",
+        "compiled out",
+        "invariant",
+        "runtime check",
+        "syscall argument",
+    ):
+        assert must in text
+    # The logic stage no longer claims the same ground.
+    assert "belong to the error-handling stage" in _stage_prompt("logic")

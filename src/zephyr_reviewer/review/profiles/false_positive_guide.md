@@ -35,9 +35,13 @@ unreachable": reachability is hard to establish from a diff, and a wrong call bu
    misused property.
 5. **Kernel API semantics.** `k_*` calls with `K_NO_WAIT` do not block and are legal in ISRs;
    `k_sem_give`, `k_work_submit`, `k_timer_start` and `k_msgq_put` with `K_NO_WAIT` are legal in
-   ISRs; a spinlock held across a short critical section is normal; `__ASSERT` is compiled out in
-   release builds and is not error handling; `SYS_INIT` levels and `CONFIG_*_INIT_PRIORITY` define
-   ordering, so verify the levels before claiming a use before init.
+   ISRs; a spinlock held across a short critical section is normal; `SYS_INIT` levels and
+   `CONFIG_*_INIT_PRIORITY` define ordering, so verify the levels before claiming a use before init.
+5a. **Assertions.** `__ASSERT` and friends are compiled out unless `CONFIG_ASSERT` is set, so they
+   are never error handling. An assertion on a true invariant (a condition only a programming error
+   in this tree can violate) is correct; do not ask to replace it with a runtime check. An assertion
+   as the only guard on a condition reachable at run time (allocation failure, input from a bus,
+   peer or user, hardware state, timeout) is a real finding: the production build runs on past it.
 6. **API misuse by hypothetical callers.** Do not report that a new internal helper could fail if
    some future or out-of-tree caller passes an invalid argument. Report only misuse by callers that
    exist (`find_references`).
