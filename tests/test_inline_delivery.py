@@ -78,16 +78,28 @@ def test_inline_comments_are_self_contained_and_marked():
     assert "**Fix:** Release the lock before returning." in lock["body"] and "```suggestion" in lock["body"]
     assert lock["body"].rstrip().endswith("verify before acting on it.</sub>")
     assert lock["start_line"] == 17 and lock["line"] == 19
-    # The key depends on location and title only, so a re-run with reworded prose still matches.
+    # The key depends on file and title only: reworded prose, a different anchor range or a moved line
+    # after a push all still match, and punctuation or case differences in the title do not matter.
     other = _review()
     other.findings[0].problem = "different wording"
+    other.findings[0].line, other.findings[0].end_line = 1617, 1668
     assert finding_key(other.findings[0]) == key
+    other.findings[0].title = "Early return leaks the bus lock!"
+    assert finding_key(other.findings[0]) == key
+    other.findings[0].file = "other.c"
+    assert finding_key(other.findings[0]) != key
 
 
 def test_publish_posts_summary_then_inline_review_and_skips_already_posted():
     run, pr = _run()
     key0 = finding_key(run.review.findings[0])
-    existing = [{"id": 1, "body": inline_marker("zephyr-reviewer", key0) + "\nposted last time"}]
+    existing = [
+        {
+            "id": 1,
+            "path": "drivers/i2c/i2c_foo.c",
+            "body": inline_marker("zephyr-reviewer", key0) + "\nposted last time",
+        }
+    ]
     seen: list = []
     logs: list[str] = []
     cfg = ReviewConfig(comment_tag="zephyr-reviewer")  # post_inline defaults to True
@@ -145,3 +157,22 @@ def test_saved_inline_comments_are_posted_after_editing(tmp_path):
     assert out["inline_count"] == 1
     review_req = [b for m, p, b in seen if p.endswith("/reviews")][0]
     assert [c["path"] for c in review_req["comments"]] == ["drivers/i2c/i2c_foo.c"]
+
+
+def test_already_posted_is_recognised_by_title_when_the_old_marker_differs():
+    """Comments posted by an older version keyed the marker on the line range; the title still identifies them."""
+    run, pr = _run()
+    seen: list = []
+    old_body = (
+        "<!-- zephyr-reviewer:finding:5679fa7dd6d9 -->\n**Early return leaks the bus lock**\n\n"
+        "🟠 high · concurrency\n\nold prose"
+    )
+    existing = [{"id": 1, "path": "drivers/i2c/i2c_foo.c", "line": 1668, "body": old_body}]
+    out = pub.publish(ReviewConfig(), _gh(seen, existing), pr, run, lambda e: "s", log=lambda m: None)
+    review_req = [b for m, p, b in seen if p.endswith("/reviews")][0]
+    assert [c["path"] for c in review_req["comments"]] == ["drivers/i2c/Kconfig"] and out["inline_count"] == 1
+    # A different file with the same title is a different finding.
+    existing = [{"id": 1, "path": "drivers/other.c", "line": 5, "body": old_body}]
+    seen.clear()
+    pub.publish(ReviewConfig(), _gh(seen, existing), pr, run, lambda e: "s", log=lambda m: None)
+    assert len([b for m, p, b in seen if p.endswith("/reviews")][0]["comments"]) == 2

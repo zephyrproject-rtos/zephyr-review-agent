@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any
 
 from .agent import RunResult
@@ -209,9 +210,28 @@ def render_failure(run: RunResult, pr: PullRequest, tag: str) -> str:
     )
 
 
+def normalize_title(title: str) -> str:
+    """A title reduced to what identifies the finding: no markdown, badge, case or punctuation differences."""
+    t = title.strip()
+    t = t.split(" · ", 1)[0]  # drop a trailing severity badge from a rendered comment line
+    t = re.sub(r"[*`_]", "", t)
+    t = re.sub(r"[^\w\s]", " ", t.lower())
+    return " ".join(t.split())
+
+
 def finding_key(f: Finding) -> str:
-    """Stable id of a finding at a location, used to avoid re-posting it on a later run."""
-    return hashlib.sha1(f"{f.file}:{f.line}:{f.end_line}:{f.title.strip().lower()}".encode()).hexdigest()[:12]
+    """Stable id of a finding, used to avoid re-posting it on a later run. Keyed on file and title only:
+    line ranges drift between runs (the model picks the anchor) and between pushes (the code moves)."""
+    return hashlib.sha1(f"{f.file}:{normalize_title(f.title)}".encode()).hexdigest()[:12]
+
+
+def posted_title(body: str) -> str:
+    """The normalized title of an inline comment this tool posted (second line, '**Title** · badge')."""
+    lines = [ln for ln in body.splitlines() if ln.strip()]
+    for ln in lines[:3]:
+        if ln.startswith("**"):
+            return normalize_title(ln)
+    return ""
 
 
 def inline_marker(tag: str, key: str) -> str:

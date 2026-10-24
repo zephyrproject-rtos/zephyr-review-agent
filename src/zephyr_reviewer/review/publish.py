@@ -15,7 +15,7 @@ from typing import Any
 from .agent import RunResult
 from .config import SEVERITY_RANK, ReviewConfig
 from .github_api import GitHub, GitHubError, PullRequest
-from .render import inline_comments, inline_marker, marker
+from .render import inline_comments, inline_marker, marker, posted_title
 
 # Called in "ask" mode with the rendered comment and the inline comments; returns
 # (post it?, body to post, inline comments to post). The CLI provides an interactive one; a job gets none.
@@ -171,14 +171,30 @@ def _post(
 def _without_already_posted(
     gh: GitHub, number: int, inline: list[dict[str, Any]], tag: str, log
 ) -> list[dict[str, Any]]:
-    """Drop inline comments whose marker is already on the pull request from an earlier run."""
+    """Drop inline comments already on the pull request from an earlier run: same marker, or the same
+    file and title (older markers included the line range, which drifts between runs)."""
     try:
         existing = gh.review_comments(number)
     except GitHubError:
         return inline
     prefix = inline_marker(tag, "")[:-4]  # "<!-- tag:finding:"
-    seen = {m for c in existing for m in _markers((c.get("body") or ""), prefix)}
-    fresh = [c for c in inline if not any(m in seen for m in _markers(c["body"], prefix))]
+    seen_markers: set[str] = set()
+    seen_titles: set[tuple[str, str]] = set()
+    for c in existing:
+        body = c.get("body") or ""
+        if prefix not in body:
+            continue
+        seen_markers.update(_markers(body, prefix))
+        title = posted_title(body)
+        if title:
+            seen_titles.add((c.get("path") or "", title))
+    fresh = []
+    for c in inline:
+        if any(m in seen_markers for m in _markers(c["body"], prefix)):
+            continue
+        if (c["path"], posted_title(c["body"])) in seen_titles:
+            continue
+        fresh.append(c)
     if len(fresh) < len(inline):
         log(f"{len(inline) - len(fresh)} inline comment(s) already posted by an earlier run; skipping them")
     return fresh
