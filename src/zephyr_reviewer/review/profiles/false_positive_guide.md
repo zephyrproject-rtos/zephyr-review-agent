@@ -19,6 +19,13 @@ unreachable": reachability is hard to establish from a diff, and a wrong call bu
    devicetree property the binding does not constrain) or a concrete caller can deliver a bad
    value. Internal callers honoring an API contract are not a path. "Add a check for safety" is
    not a finding.
+1a. **Bounds enforced elsewhere.** Before claiming a missing bound on untrusted data, look for the
+   bound upstream of the function: in the caller, in a HAL or vendor driver that clamps the value
+   (scan SSID lengths, for instance), in hardware (a frame handler reached only on an FCS-good
+   interrupt), in a Kconfig-sized buffer that the arithmetic cannot exceed, or in control flow (a
+   counter a fallthrough increments before the division). Eight of two hundred audited Zephyr
+   security findings were exactly this kind of false positive. A party strictly more privileged
+   than the code (the secure world, the kernel seen from a driver) is not an attacker.
 2. **Unchecked return values.** A missing check is a defect only when the call can actually fail on
    a reachable path and the failure has a consequence. Many Zephyr calls return void or cannot fail
    for the given arguments (`k_sem_give`, `k_mutex_unlock` on a held mutex, `sys_*` helpers). But a

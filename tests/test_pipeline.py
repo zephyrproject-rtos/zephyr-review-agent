@@ -26,11 +26,13 @@ from zephyr_reviewer.review.schema import parse_review
 
 def test_planner_picks_passes_from_the_change():
     assert plan_specialists(["doc/x.rst"], "") == ["intent", "logic"]
+    # Kernel C code always gets the security pass: syscall verifiers and object checks live there.
     assert plan_specialists(["kernel/sched.c"], "z_sched_lock();") == [
         "intent",
         "logic",
         "error_handling",
         "concurrency",
+        "security",
     ]
     assert plan_specialists(["arch/arm/core/fault.S"], "") == ["intent", "logic", "error_handling", "concurrency"]
     assert plan_specialists(["lib/os/clock.c"], "") == ["intent", "logic", "error_handling", "resources", "security"]
@@ -44,6 +46,20 @@ def test_planner_picks_passes_from_the_change():
         "build_config",
     ]
     assert "security" in plan_specialists(["subsys/net/ip/tcp.c"], "memcpy(a, b, n);")
+    # Security runs for the attacker-facing areas the sightings came from, and on wire-length idioms anywhere.
+    for path, text in [
+        ("drivers/ieee802154/ieee802154_rf2xx.c", "rx_len = phr & 0x7f;"),
+        ("subsys/fs/ext2/ext2_ops.c", ""),
+        ("subsys/llext/llext_load.c", ""),
+        ("kernel/poll.c", "z_vrfy_k_poll"),
+        ("subsys/usb/device_next/class/usbd_cdc_ncm.c", ""),
+        ("drivers/modem/hl7800.c", ""),
+        ("subsys/lorawan/services/frag_transport.c", ""),
+        ("drivers/foo/anything.c", "len = sys_get_le16(buf); memcpy(dst, buf, len);"),
+    ]:
+        assert "security" in plan_specialists([path], text), path
+    assert "security" not in plan_specialists(["drivers/gpio/gpio_foo.c"], "gpio_pin_set(dev, 1);")
+    assert "security" not in plan_specialists(["doc/x.rst"], "memcpy")  # no C code
     assert "build_config" in plan_specialists(["boards/vnd/b/b.dts"], "")
     assert "hardware" not in plan_specialists(["boards/vnd/b/b.dts"], "")  # no C code
     assert plan_specialists(["dts/bindings/i2c/x.yaml"], "") == ["intent", "logic", "build_config"]
@@ -518,3 +534,36 @@ def test_refuted_candidates_section_is_opt_in():
     assert "Also considered" not in render_comment(
         review, RunResult(review, 1, Usage(), ["m"], False), pr, repo="o/r", tag="t", refuted=True
     )
+
+
+def test_security_stage_prompt_encodes_the_sightings_taxonomy():
+    from zephyr_reviewer.review.pipeline import _stage_prompt
+
+    text = _stage_prompt("security")
+    for must in (
+        "Trust boundaries",
+        "net_buf_pull",
+        "buf->len >= sizeof",
+        "ARRAY_SIZE",
+        "uint8_t n = payload_len",
+        "1U << n",
+        "ROUND_UP",
+        "strncpy(dst, src, sizeof(dst))",
+        "rec_len",
+        "CONTAINER_OF",
+        "constant-time",
+        "sys_csrand_get",
+        "K_SYSCALL_MEMORY_READ/WRITE",
+        "K_SYSCALL_OBJ_NEVER_INIT",
+        "K_OBJ_ANY",
+        "sibling sites",
+        "FCS-good",
+        "Not a boundary",
+        "speculative",
+    ):
+        assert must in text, must
+    guide = _stage_prompt("verification")  # the guide is appended at run time; check the guide file directly
+    from zephyr_reviewer.review.prompts import load_guides
+
+    assert "Bounds enforced elsewhere" in load_guides() and "strictly more privileged" in load_guides()
+    assert guide  # verification prompt still loads

@@ -45,8 +45,16 @@ _CONCURRENCY_HINT = re.compile(
     r"|K_FOREVER|z_impl_|z_vrfy_|__syscall|k_poll|k_condvar|k_event)"
 )
 _SECURITY_HINT = re.compile(
-    r"\b(z_vrfy_|__syscall|K_SYSCALL|memcpy|strcpy|strncpy|sscanf|net_pkt|net_buf|bt_|usb_|shell_|json_|mgmt_|"
-    r"psa_|mbedtls_|tc_|CONFIG_USERSPACE|k_usermode)"
+    r"\b(z_vrfy_|__syscall|K_SYSCALL|K_OBJ_ANY|memcpy|memmove|strcpy|strncpy|strlen|strchr|strtok|sscanf|atoi|strtol|"
+    r"net_pkt|net_buf|sys_get_le|sys_get_be|sys_le16_to_cpu|sys_be16_to_cpu|le16_to_cpu|CONTAINER_OF|ARRAY_SIZE|"
+    r"bt_|hci_|l2cap|rfcomm|sdp_|gatt|usb_|usbd_|usbh_|wLength|wTotalLength|bLength|shell_|json_|cbor|mgmt_|"
+    r"psa_|mbedtls_|tc_|crypto|aead|poly1305|chacha|aes_|mac_|nonce|sys_rand_get|sys_csrand_get|"
+    r"CONFIG_USERSPACE|k_usermode|elf|Elf|phr|PHR|dlc|DLC|rx_len|frame_len|payload_len|hdr_len|opt_len|tlv)"
+)
+_SECURITY_PATHS = re.compile(
+    r"\b(subsys/(net|bluetooth|usb|fs|llext|mgmt|shell|lorawan|modbus|pmci|dap|debug|ipc|logging|canbus|sd|"
+    r"modem|settings|midi|tee|rtio)/|drivers/(wifi|modem|ieee802154|ethernet|bluetooth|usb|tee|virtio|"
+    r"pcie|nvme|mctp|lora|can)/|lib/|kernel/)"
 )
 _RESOURCE_HINT = re.compile(r"\b(k_malloc|k_free|k_heap_|k_mem_slab|net_buf|net_pkt|k_object|alloc|free)\b")
 
@@ -80,9 +88,7 @@ def plan_specialists(files: list[str], added_text: str) -> list[str]:
         for f in files
     ):
         chosen.append("build_config")
-    if _SECURITY_HINT.search(added_text) or re.search(
-        r"\b(subsys/net|subsys/bluetooth|subsys/usb|subsys/mgmt|subsys/shell|lib/)", paths
-    ):
+    if c_code and (_SECURITY_HINT.search(added_text) or _SECURITY_PATHS.search(paths)):
         chosen.append("security")
     return [s for s in SPECIALISTS if s in chosen]
 
