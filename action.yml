@@ -202,8 +202,8 @@ inputs:
     default: "true"
   show_run_details:
     description: >-
-      Append the run details (models, steps, tool calls, tokens, cost, time) to the posted comment.
-      Off by default; the details always go to the job's step summary and review.json.
+      Append the run details (models, steps, tool calls, tokens, cost, time) to the posted comment,
+      the job summary and the log. Off by default: then they appear only in review.json.
     required: false
     default: "false"
   comment_tag:

@@ -163,6 +163,41 @@ def test_review_command_dry_run_writes_artifacts_and_prints_comment(
     assert record["review"]["verdict"] == "request_changes" and record["head_sha"] == mini_repo["head"]
 
 
+def test_cost_and_models_stay_out_of_summary_and_log_unless_asked(
+    mini_repo, stub_openrouter, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("ZR_BASE_URL", stub_openrouter)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    base = [
+        "review",
+        "--repo",
+        str(mini_repo["root"]),
+        "--base",
+        mini_repo["base"],
+        "--head",
+        mini_repo["head"],
+        "--dry-run",
+        "--in-process",
+    ]
+    assert cli.main([*base, "--output-dir", str(tmp_path / "a")]) == 0
+    out, err = capsys.readouterr()
+    text = summary.read_text()
+    for leak in ("$0.", "tokens", "stub/model", "via OpenRouter"):
+        assert leak not in text and leak not in out  # job summary and posted comment carry none of it
+    # The progress log may name models and token counts while waiting; it never shows cost.
+    assert "$0." not in err and "via OpenRouter" not in err
+    assert "review finished:" in err and "step(s)" in err
+
+    summary.write_text("")
+    assert cli.main([*base, "--output-dir", str(tmp_path / "b"), "--show-details"]) == 0
+    out, err = capsys.readouterr()
+    text = summary.read_text()
+    assert "via OpenRouter" in text and "$0.0" in text and "stub/model" in text
+    assert "via OpenRouter" in out and "via OpenRouter" in err
+
+
 def test_review_command_no_inline_lists_everything(mini_repo, stub_openrouter, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("ZR_BASE_URL", stub_openrouter)
     monkeypatch.setenv("OPENROUTER_API_KEY", "test")

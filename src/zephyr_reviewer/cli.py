@@ -26,7 +26,7 @@ from .review.mcp_client import ToolBridge, stdio_params
 from .review.openrouter import OpenRouter
 from .review.pipeline import hunk_text, run_pipeline
 from .review.prompts import load_profile, opening_message, system_prompt
-from .review.render import inline_comments, preview_inline, render_comment, render_failure, run_details
+from .review.render import inline_comments, preview_inline, render_comment, render_failure, run_details, run_progress
 from .review.stages import run_two_stage
 
 
@@ -487,8 +487,10 @@ def cmd_review(args: argparse.Namespace) -> int:
     confirm = _interactive_confirm(cfg.output_dir, pr) if cfg.publish == "ask" and _has_terminal() else None
     outputs = pub.publish(cfg, gh, pr, run, render, log=log, confirm=confirm)
     pub.write_outputs(outputs)
-    pub.write_summary(body + "\n\n" + run_details(run, pr))  # the step summary always carries the run details
-    log(run_details(run, pr))
+    # Models, tokens and cost appear nowhere, not even the job summary or log, unless show_run_details is set;
+    # review.json keeps them for whoever opens the artifact.
+    pub.write_summary(body + ("\n\n" + run_details(run, pr) if cfg.show_run_details else ""))
+    log(run_details(run, pr) if cfg.show_run_details else run_progress(run))
     if outputs.get("posted") != "true" and confirm is None:
         print(body)
         if inline:

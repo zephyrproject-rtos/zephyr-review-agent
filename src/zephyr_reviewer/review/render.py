@@ -171,8 +171,16 @@ ADVISORY = (
 )
 
 
+def run_progress(run: RunResult) -> str:
+    """What a run did, without models, tokens or cost: safe for logs and summaries by default."""
+    return (
+        f"review finished: {run.steps} step(s), {run.tool_call_count} tool call(s), {run.seconds:.0f}s"
+        f"{' · budget exhausted, review forced' if run.forced else ''}"
+    )
+
+
 def run_details(run: RunResult, pr: PullRequest) -> str:
-    """Models, steps, tool calls, tokens, cost and time of the run. Shown on the PR only when asked."""
+    """Models, steps, tool calls, tokens, cost and time of the run. Shown only when show_run_details is set."""
     cost = f" · ${run.usage.cost:.3f}" if run.usage.cost else ""
     if len(run.stages) > 1:
         how = " then ".join(

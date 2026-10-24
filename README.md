@@ -301,9 +301,10 @@ model reads. The remaining tools return text; they gain schemas as consumers app
 
 ### Run details
 
-The posted comment ends with the one-line advisory notice and nothing else. Models, steps, tool
-calls, tokens, cost and time go to the job's step summary, the log and `review.json`. Set
-`show_run_details: "true"` (or `--show-details`) to append them to the comment.
+The posted comment ends with the one-line advisory notice and nothing else. Models, tokens and cost
+appear nowhere by default, not in the comment, the job summary or the log; only `review.json` in the
+artifacts records them. Set `show_run_details: "true"` (or `--show-details`) to include them in all
+three.
 
 ### False-positive guide and severity calibration
 
