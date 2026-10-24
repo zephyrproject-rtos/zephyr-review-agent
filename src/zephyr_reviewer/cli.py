@@ -85,6 +85,11 @@ def _add_review_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--show-details", action="store_true", help="Append models, steps, tokens, cost and time to the posted comment"
     )
+    p.add_argument(
+        "--show-refuted",
+        action="store_true",
+        help="multi-stage: append a collapsed list of candidates verification refuted, with reasons",
+    )
     p.add_argument("--inline", action="store_true", help="Post anchored findings as inline review comments (default)")
     p.add_argument("--no-inline", action="store_true", help="Put every finding in the top-level comment instead")
     p.add_argument("--no-comment", action="store_true", help="Do not post or update the summary comment")
@@ -148,6 +153,8 @@ def _config(args: argparse.Namespace) -> ReviewConfig:
         cfg.include_discussion = False
     if args.show_details:
         cfg.show_run_details = True
+    if args.show_refuted:
+        cfg.show_refuted_candidates = True
     if args.in_process:
         cfg.in_process_server = True
     if args.prefetch_chars is not None:
@@ -470,6 +477,7 @@ def cmd_review(args: argparse.Namespace) -> int:
                 api_url=cfg.github_api_url,
                 details=cfg.show_run_details,
                 exclude_inline=exclude_inline,
+                refuted=cfg.show_refuted_candidates,
             )
 
         inline = inline_comments(review, cfg.comment_tag) if cfg.post_inline else []

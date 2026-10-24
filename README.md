@@ -199,7 +199,10 @@ for automation.
    fixed, and the verdict is forced to `request_changes` when a high or critical finding stands.
 
 Findings whose trigger path rests on an unverified assumption carry `speculative: true` and are
-capped at medium severity, reported rather than buried. `review-output/review_map.json` records the
+capped at medium severity, reported rather than buried. Verification of genuinely borderline
+candidates is where runs on the same change can differ; `show_refuted_candidates: "true"` (or
+`--show-refuted`) appends a collapsed one-line-per-item list of what was raised and refuted, with
+the reason, so a maintainer can see those calls without them counting as findings. `review-output/review_map.json` records the
 lineage: every candidate, which stage produced it, and where it ended and why. When `draft_model`
 is set the specialists run on it and the primary model verifies.
 

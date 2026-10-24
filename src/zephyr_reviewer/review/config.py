@@ -50,7 +50,7 @@ class ReviewConfig:
     draft_models: list[str] = field(default_factory=list)  # two-stage drafts and multi-stage specialists run here
     verify_max_steps: int = 15
     dossier_chars: int = 40_000
-    specialist_max_steps: int = 15
+    specialist_max_steps: int = 20
     hard_case_max_steps: int = 12
     max_hard_cases: int = 8
     specialists: list[str] = field(default_factory=list)  # empty: planned from the change
@@ -83,6 +83,7 @@ class ReviewConfig:
     post_inline: bool = True
     comment_tag: str = "zephyr-reviewer"
     show_run_details: bool = False
+    show_refuted_candidates: bool = False
     fail_on_severity: str = "none"
     publish: str = "post"  # post | ask | never
 
@@ -148,6 +149,7 @@ class ReviewConfig:
         cfg.post_inline = _bool(_env("post_inline_comments"), True)
         cfg.comment_tag = _env("comment_tag", cfg.comment_tag)
         cfg.show_run_details = _bool(_env("show_run_details"), False)
+        cfg.show_refuted_candidates = _bool(_env("show_refuted_candidates"), False)
         cfg.fail_on_severity = _env("fail_on_severity", "none").strip().lower() or "none"
         cfg.publish = _env("publish", "post").strip().lower() or "post"
         if _bool(_env("dry_run"), False):

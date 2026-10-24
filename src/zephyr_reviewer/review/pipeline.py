@@ -533,7 +533,7 @@ async def run_pipeline(
     changed_files: list[str],
     added_text: str,
     specialists: list[str] | None = None,
-    specialist_max_steps: int = 15,
+    specialist_max_steps: int = 20,
     verify_max_steps: int = 12,
     hard_case_max_steps: int = 12,
     report_max_steps: int = 6,

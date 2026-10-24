@@ -471,3 +471,50 @@ def test_error_handling_stage_prompt_covers_returns_and_asserts():
         assert must in text
     # The logic stage no longer claims the same ground.
     assert "belong to the error-handling stage" in _stage_prompt("logic")
+
+
+def test_refuted_candidates_section_is_opt_in():
+    from tests.test_agent import GOOD_REVIEW
+    from zephyr_reviewer.review.agent import RunResult
+    from zephyr_reviewer.review.github_api import PullRequest
+    from zephyr_reviewer.review.openrouter import Usage
+    from zephyr_reviewer.review.render import refuted_candidates, render_comment
+
+    review, _ = parse_review(GOOD_REVIEW, {"drivers/i2c/i2c_foo.c": {17, 18, 19}, "drivers/i2c/Kconfig": {20}})
+    rm = {
+        "specialists": ["intent"],
+        "concerns": [
+            {"id": "C1", "stage": "intent", "title": "Kept", "fate": "confirmed", "by": "verification"},
+            {
+                "id": "C2",
+                "stage": "security",
+                "title": "Deferred close changes lifetime semantics",
+                "fate": "refuted",
+                "by": "H1",
+                "reason": "the walker frees the node under ilock; callers never observe a freed session.",
+            },
+            {"id": "C3", "stage": "logic", "title": "Unused", "fate": "dismissed"},
+        ],
+        "dismissed_concerns": [],
+        "findings": [],
+        "stages": [],
+    }
+    run = RunResult(review, 3, Usage(), ["m"], False, review_map=rm)
+    pr = PullRequest(7, "t", "", "a", "main", "b" * 40, "pr", "h" * 40, "o/r", False)
+    assert refuted_candidates(run) == [
+        (
+            "Deferred close changes lifetime semantics",
+            "security",
+            "the walker frees the node under ilock; callers never observe a freed session.",
+        )
+    ]
+    plain = render_comment(review, run, pr, repo="o/r", tag="t")
+    assert "Also considered and refuted" not in plain
+    shown = render_comment(review, run, pr, repo="o/r", tag="t", refuted=True)
+    assert "<details><summary>Also considered and refuted: 1 candidate(s)</summary>" in shown
+    assert "- Deferred close changes lifetime semantics (security): the walker frees the node under ilock" in shown
+    assert "Kept" not in shown.split("Also considered")[1]
+    # No review map (single agent): nothing added even when asked.
+    assert "Also considered" not in render_comment(
+        review, RunResult(review, 1, Usage(), ["m"], False), pr, repo="o/r", tag="t", refuted=True
+    )

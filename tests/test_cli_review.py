@@ -198,6 +198,13 @@ def test_cost_and_models_stay_out_of_summary_and_log_unless_asked(
     assert "via OpenRouter" in out and "via OpenRouter" in err
 
 
+def test_show_refuted_flag_parses(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    cfg = cli._config(cli.build_parser().parse_args(["review", "--base", "x", "--show-refuted"]))
+    assert cfg.show_refuted_candidates is True
+    assert cli._config(cli.build_parser().parse_args(["review", "--base", "x"])).show_refuted_candidates is False
+
+
 def test_review_command_no_inline_lists_everything(mini_repo, stub_openrouter, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("ZR_BASE_URL", stub_openrouter)
     monkeypatch.setenv("OPENROUTER_API_KEY", "test")

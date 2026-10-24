@@ -138,13 +138,16 @@ async def run_agent(
     errors: list[str] = []
     tool_results: list[dict[str, Any]] = []
     compactions = 0
+    forced_misses = 0
 
     def done(output: Any, step: int) -> AgentResult:
         return AgentResult(
             output, step, usage, models, forced, errors, transcript, time.monotonic() - started, tool_results
         )
 
-    for step in range(1, max_steps + 1):
+    # Once the budget is out the model is forced to submit; GRACE_STEPS more turns allow a rejected or
+    # malformed forced submission to be retried instead of losing the whole run's work.
+    for step in range(1, max_steps + GRACE_STEPS + 1):
         elapsed = time.monotonic() - started
         out_of_time = max_seconds > 0 and elapsed > max_seconds
         budget_out = step >= max_steps or last_prompt_tokens > max_context_tokens or out_of_time
@@ -155,7 +158,9 @@ async def run_agent(
             log(f"{tag}[step {step}] {why} exhausted; forcing {terminal.name}")
             messages.append({"role": "user", "content": budget_exhausted(terminal.name)})
         if forced:
-            tool_choice = {"type": "function", "function": {"name": terminal.name}}
+            # Some providers answer a named tool_choice with an empty message; after two such misses fall
+            # back to "required" (any tool), which the loop then steers to the terminal tool by rejection.
+            tool_choice = {"type": "function", "function": {"name": terminal.name}} if forced_misses < 2 else "required"
 
         approx_tokens = sum(len(str(m.get("content") or "")) for m in messages) // 4
         log(f"{tag}[step {step}] waiting for {llm.models[0]} ({len(messages)} messages, ~{approx_tokens:,} tokens)")
@@ -205,7 +210,9 @@ async def run_agent(
 
         if not result.tool_calls:
             nudges += 1
-            log(f"{tag}[step {step}] no tool call; nudging ({nudges})")
+            if forced:
+                forced_misses += 1
+            log(f"{tag}[step {step}] no tool call{' despite forced tool_choice' if forced else ''}; nudging ({nudges})")
             if nudges > 2:
                 forced = True
             messages.append(
@@ -283,11 +290,12 @@ async def run_agent(
                     content = f"ERROR: unknown tool {name!r}. Available: {available}, {terminal.name}."
             messages.append({"role": "tool", "tool_call_id": tc.get("id", ""), "name": name, "content": content})
 
-    errors.append(f"model did not call {terminal.name} within {max_steps} steps")
-    return done(None, max_steps)
+    errors.append(f"model did not call {terminal.name} within {max_steps} steps (+{GRACE_STEPS} forced)")
+    return done(None, max_steps + GRACE_STEPS)
 
 
 HEARTBEAT_SECONDS = 30.0
+GRACE_STEPS = 3  # extra turns after the step budget, all forced to the terminal tool
 
 
 async def _with_heartbeat(awaitable, on_wait):

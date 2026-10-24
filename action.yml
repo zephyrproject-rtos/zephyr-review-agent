@@ -60,7 +60,7 @@ inputs:
     default: ""
   specialist_max_steps:
     required: false
-    default: "15"
+    default: "20"
   hard_case_max_steps:
     required: false
     default: "12"
@@ -200,6 +200,12 @@ inputs:
       finding in the top-level comment.
     required: false
     default: "true"
+  show_refuted_candidates:
+    description: >-
+      multi-stage: add a collapsed list of the concerns specialists raised that verification refuted,
+      one line each with the reason. Off by default; useful to see the gray-area calls.
+    required: false
+    default: "false"
   show_run_details:
     description: >-
       Append the run details (models, steps, tool calls, tokens, cost, time) to the posted comment,
@@ -313,6 +319,7 @@ runs:
         INPUT_POST_COMMENT: ${{ inputs.post_comment }}
         INPUT_POST_INLINE_COMMENTS: ${{ inputs.post_inline_comments }}
         INPUT_SHOW_RUN_DETAILS: ${{ inputs.show_run_details }}
+        INPUT_SHOW_REFUTED_CANDIDATES: ${{ inputs.show_refuted_candidates }}
         INPUT_COMMENT_TAG: ${{ inputs.comment_tag }}
         INPUT_FAIL_ON_SEVERITY: ${{ inputs.fail_on_severity }}
         INPUT_PUBLISH: ${{ inputs.publish }}

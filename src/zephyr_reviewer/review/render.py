@@ -114,6 +114,7 @@ def render_comment(
     title: str = "AI review (advisory)",
     details: bool = False,
     exclude_inline: bool = False,
+    refuted: bool = False,
 ) -> str:
     """The top-level comment. With ``exclude_inline`` the anchored findings are left to inline comments
     and only counted here; unanchored findings always appear in full."""
@@ -160,6 +161,8 @@ def render_comment(
         out += ["### Unresolved discussion", "", review.discussion_assessment, ""]
     if review.test_plan:
         out += render_test_plan(review)
+    if refuted:
+        out += render_refuted(run)
     out += ["---", f"<sub>{run_details(run, pr) + ' ' if details else ''}{ADVISORY}</sub>"]
     return "\n".join(out)
 
@@ -294,3 +297,31 @@ def preview_inline(inline: list[dict[str, Any]]) -> str:
         body = "\n".join(ln for ln in c["body"].splitlines() if not ln.startswith("<!-- "))
         out += ["", f"--- [{i}] {where} ---", body]
     return "\n".join(out)
+
+
+def refuted_candidates(run: RunResult) -> list[tuple[str, str, str]]:
+    """(title, stage, reason) of specialist concerns that verification or a hard case refuted."""
+    rm = run.review_map or {}
+    out = []
+    for c in rm.get("concerns", []):
+        if c.get("fate") == "refuted":
+            out.append((str(c.get("title") or ""), str(c.get("stage") or ""), str(c.get("reason") or "").strip()))
+    return out
+
+
+def render_refuted(run: RunResult) -> list[str]:
+    items = refuted_candidates(run)
+    if not items:
+        return []
+    out = [
+        f"<details><summary>Also considered and refuted: {len(items)} candidate(s)</summary>",
+        "",
+        "These were raised by a specialist pass and rejected on verification. Listed for transparency; "
+        "they are not findings.",
+        "",
+    ]
+    for title, stage, reason in items:
+        why = f": {reason[:240].rstrip('.')}" if reason else ""
+        out.append(f"- {title} ({stage}){why}")
+    out += ["", "</details>", ""]
+    return out

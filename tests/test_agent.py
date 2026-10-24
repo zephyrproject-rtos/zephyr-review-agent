@@ -393,3 +393,27 @@ def test_publish_upserts_comment_and_posts_inline_review(mini_repo, tmp_path, mo
     assert (tmp_path / "out" / "review.json").exists() and (tmp_path / "out" / "transcript.jsonl").exists()
     saved = json.loads((tmp_path / "out" / "review.json").read_text())
     assert saved["review"]["findings"][0]["title"] == "Early return leaks the bus lock"
+
+
+async def test_forced_submission_gets_grace_steps_and_falls_back_to_required(mini_repo):
+    """A provider that answers a forced tool_choice with an empty message no longer loses the run."""
+    script = ScriptedOpenRouter(
+        [
+            _completion({"content": "", "tool_calls": [_tool_call("c1", "pr_overview", {})]}),
+            _completion({"content": "", "tool_calls": [_tool_call("c2", "commit_messages", {})]}),
+            _completion({"content": ""}),  # step 3: forced, empty
+            _completion({"content": ""}),  # step 4 (grace): forced, empty again
+            _completion({"content": "", "tool_calls": [_tool_call("c5", "submit_review", GOOD_REVIEW)]}),  # step 5
+        ]
+    )
+    run, _, _ = await _run(mini_repo, script, max_steps=3)
+    assert run.review is not None and run.forced and run.steps == 5
+    choices = [r["tool_choice"] for r in script.requests]
+    assert choices[2] == {"type": "function", "function": {"name": "submit_review"}}
+    assert choices[3] == {"type": "function", "function": {"name": "submit_review"}}
+    assert choices[4] == "required"  # after two empty forced replies, any tool is accepted and steered
+
+    # Grace is bounded: a model that never submits still ends, with the error naming the budget.
+    never = ScriptedOpenRouter([_completion({"content": ""}) for _ in range(10)])
+    run, _, _ = await _run(mini_repo, never, max_steps=2)
+    assert run.review is None and "within 2 steps (+3 forced)" in run.errors[0]
