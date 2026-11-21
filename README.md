@@ -336,15 +336,15 @@ records the verdicts, and `review_map.json` the lineage of each `X*` id.
 When a pull request this tool already reviewed is reviewed again at a new head, the earlier run's
 inline comments whose threads are still open are re-checked. Each becomes a claim (`X*`, after any
 from `--findings`) with the source "the earlier review of <sha>", verified like the others: the
-code at the new head either still has the problem or it does not. A refuted claim was fixed or no
-longer applies: its thread gets a reply in the form of the comment it answers ("**No longer
-applies** · at <sha>", then a sentence or two on what settles it, trimmed to that length) and is
-resolved. A confirmed claim keeps its thread, and the new finding that confirms it is not posted a
+code at the new head either still has the problem or it does not. A refuted claim was fixed, or
+was wrong from the start; the run cannot tell which, so the reply claims neither. Its thread gets
+a reply in the form of the comment it answers ("**Does not apply** · at <sha>", then a sentence
+or two on what settles it, trimmed to that length) and is resolved. A confirmed claim keeps its thread, and the new finding that confirms it is not posted a
 second time. Undecided claims are left alone, and so is a refutation the verifier was forced to
 submit when its budget ran out. Each earlier comment gets its own hard case and its own reason, so
 a reply never bundles other comments. Each earlier comment is answered in its own thread,
 never in the summary comment, which only counts them ("Earlier inline comments re-checked at this
-head: 3 (1 resolved as no longer applying, 2 still open)"); the "Claims checked" section is for
+head: 3 (1 does not apply, 2 still open)"); the "Claims checked" section is for
 claims from `--findings` only.
 
 When someone replied in the thread of an earlier comment, the reply travels with the claim as
@@ -498,7 +498,7 @@ exception: a critical or high finding under another title is not dropped for bei
 dismissed comment that was low or a suggestion. It is posted, and logged. The summary and the
 verdict are written for the findings that are left. A 👎 on
 an open thread also gets the thread resolved when the token allows it. A thread the reviewer
-itself closed as no longer applying is not a dismissal.
+itself closed as not applying is not a dismissal.
 
 A run that fails (a model error, a tool server that died, a bug) posts nothing: no comment, no
 review, no reply, and an earlier review's comment stays as it was. The error, and the traceback
@@ -547,7 +547,7 @@ is a workflow to drop into the Zephyr repository or a fork. Points that matter:
   hunk or a reworded commit message gives another digest and is reviewed. A skipped run posts
   nothing and leaves the earlier comments as they are.
 - A review at a new head re-checks the earlier run's open inline comments and resolves the ones
-  that no longer apply (see "Re-reviews after a push").
+  that do not apply (see "Re-reviews after a push").
 - `rereview: delta` narrows a re-review to what changed since the earlier one and reuses what that
   run established. It reads the artifact the workflow uploads, so keep the upload step and
   `actions: read` (see "Re-reviews that build on the earlier run").

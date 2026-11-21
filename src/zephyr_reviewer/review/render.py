@@ -428,11 +428,13 @@ def refuted_candidates(run: RunResult) -> list[tuple[str, str, str]]:
 
 def earlier_comments_line(earlier: list[ClaimVerdict]) -> str:
     """One line on the earlier run's inline comments that were re-checked: each is answered in its own
-    thread (a reply and resolution when it no longer applies), so the summary only counts them."""
+    thread (a reply and resolution when it does not apply), so the summary only counts them. The summary
+    is posted before the threads are resolved, which the token may not be allowed to do, so it says what
+    was found, not what was done to the thread."""
     tally = {v: sum(1 for c in earlier if c.verdict == v) for v in ("refuted", "confirmed", "undecided")}
     parts = []
     if tally["refuted"]:
-        parts.append(f"{tally['refuted']} resolved as no longer applying")
+        parts.append(f"{tally['refuted']} {'does' if tally['refuted'] == 1 else 'do'} not apply")
     if tally["confirmed"]:
         parts.append(f"{tally['confirmed']} still open")
     if tally["undecided"]:
@@ -448,7 +450,7 @@ def earlier_summary_line(carried: list[ClaimVerdict]) -> str:
     if tally["confirmed"]:
         parts.append(f"{tally['confirmed']} still apply and are listed below")
     if tally["refuted"]:
-        parts.append(f"{tally['refuted']} no longer apply")
+        parts.append(f"{tally['refuted']} {'does' if tally['refuted'] == 1 else 'do'} not apply")
     if tally["undecided"]:
         parts.append(f"{tally['undecided']} undecided")
     return f"Earlier findings from the summary re-checked at this head: {len(carried)} ({', '.join(parts)})."

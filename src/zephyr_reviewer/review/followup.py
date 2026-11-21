@@ -4,8 +4,9 @@
 """Inline comments this tool posted on an earlier head, re-checked when the pull request moves.
 
 Each open one enters the new run as a claim to verify, like a finding supplied from a file. A claim
-the run refutes was fixed or no longer applies: its thread gets a short reply and is resolved. A
-confirmed one keeps its thread, and the new finding that confirms it is not posted a second time.
+the run refutes does not apply at the new head, because the code was fixed or because the comment was
+wrong all along: its thread gets a short reply and is resolved. A confirmed one keeps its thread, and
+the new finding that confirms it is not posted a second time.
 
 What people wrote in a thread travels with the claim: the author explaining why the code is as it
 is, or a reviewer disputing the comment. It is data for the re-check, which may find the reply
@@ -76,7 +77,7 @@ class OpenFinding:
     recommendation: str = ""
     outdated: bool = False
     url: str = ""
-    answered: str = ""  # head at which an earlier run already replied that it no longer applies
+    answered: str = ""  # head at which an earlier run already replied that it does not apply
     replies: list[Reply] = field(default_factory=list)
     unanswered: bool = False  # a person replied after our last message in the thread
 
@@ -250,7 +251,7 @@ def dismissed_findings(
     gh: GitHub, number: int, tag: str, pr_author: str = "", trust: TrustFn | None = None
 ) -> list[Dismissed]:
     """This tool's inline comments a person set aside: the thread was resolved by someone other than this
-    tool (a thread this tool closed as no longer applying is not a dismissal), or the comment got a thumbs
+    tool (a thread this tool closed as not applying is not a dismissal), or the comment got a thumbs
     down while its thread is open. Oldest first, each with what people replied."""
     ours = f"<!-- {tag}:"
     scan = _scan(gh, number, tag)
@@ -507,7 +508,7 @@ def outcome_lines(review: Review, claims: list[Claim]) -> list[str]:
         what = f"{v.id} ({c.location} {c.title[:70]})"
         reason = " ".join((v.reason or "").split())[:160]
         if v.verdict == "refuted":
-            out.append(f"{what}: no longer applies, thread answered and resolved" + (f": {reason}" if reason else ""))
+            out.append(f"{what}: does not apply, thread answered and resolved" + (f": {reason}" if reason else ""))
         elif v.verdict == "confirmed" and c.extra.get("unanswered"):
             out.append(f"{what}: still applies, the reply in its thread is answered, thread left open")
         elif v.verdict == "confirmed":
@@ -567,11 +568,17 @@ def reply_text(reason: str) -> str:
 
 def reply_body(tag: str, head_sha: str, reason: str, *, still: bool = False) -> str:
     """The reply in the form of the comment it answers: a bold line with its badge, then the text. It closes
-    the thread ("No longer applies"), or answers a person in a thread that stays open ("Still applies")."""
+    the thread ("Does not apply"), or answers a person in a thread that stays open ("Still applies").
+
+    The closing label says what the re-check established and no more. A refuted comment may have been fixed
+    by the push or may never have held, and the run cannot tell the two apart: the code the comment is about
+    need not be the code that changed. "No longer applies" claimed a fix for both, also under a reply that
+    explained why the comment had been wrong from the start. The sentence after the label says what settles
+    it."""
     if still:
         lines = [replied_marker(tag, head_sha), f"**Still applies** · at {head_sha[:12]}"]
     else:
-        lines = [answered_marker(tag, head_sha), f"**No longer applies** · at {head_sha[:12]}"]
+        lines = [answered_marker(tag, head_sha), f"**Does not apply** · at {head_sha[:12]}"]
     text = reply_text(reason)
     if text:
         lines += ["", text]
@@ -639,7 +646,7 @@ def resolve_addressed(
         done.append({"id": c.id, "file": c.file, "line": c.line, "title": c.title, "reason": reason, "url": url})
     if done:
         log(
-            f"resolved {len(done)} earlier inline comment(s) that no longer apply at {head_sha[:12]}: "
+            f"resolved {len(done)} earlier inline comment(s) that do not apply at {head_sha[:12]}: "
             + "; ".join(f"{d['id']} {d['file']}:{d['line']} {d['title'][:60]}" for d in done)
         )
     if failed:

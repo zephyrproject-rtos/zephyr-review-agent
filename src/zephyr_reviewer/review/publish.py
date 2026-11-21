@@ -150,7 +150,7 @@ def publish(
             return outputs
         pending = pending_resolutions(run.review, claims) if (claims and run.review is not None) else []
         if pending:
-            log(f"{len(pending)} earlier inline comment(s) will be resolved as no longer applying if you post")
+            log(f"{len(pending)} earlier inline comment(s) will be resolved as not applying if you post")
         ok, body, inline = confirm(body, inline)
         if not ok:
             log("not posted")

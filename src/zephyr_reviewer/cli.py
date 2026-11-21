@@ -180,7 +180,7 @@ def _add_review_args(p: argparse.ArgumentParser) -> None:
         "--no-resolve-addressed",
         action="store_true",
         help="On a re-review, leave the earlier review's inline comments alone instead of re-checking them "
-        "and resolving the ones that no longer apply",
+        "and resolving the ones that do not apply",
     )
     p.add_argument(
         "--no-discussion",

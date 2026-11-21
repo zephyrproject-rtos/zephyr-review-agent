@@ -260,7 +260,8 @@ def test_the_summary_names_its_run_and_says_when_it_covers_only_what_changed():
     assert run_marker(TAG, "555") in body
     assert "Re-review of what changed since `aaaaaaaaaaaa`; the rest was reviewed then." in body
     assert "Earlier findings from the summary re-checked at this head: 2 (1 still apply" in body
-    assert "Earlier inline comments re-checked at this head: 1 (1 resolved" in body
+    assert "Earlier inline comments re-checked at this head: 1 (1 does not apply)." in body
+    assert "no longer appl" not in body  # a refuted comment may never have held: no fix is claimed
     assert "supplied" not in body.lower()  # neither kind is listed as a claim from outside
     plain = render_comment(review, run, pr, repo="o/r", tag=TAG, run_id="")
     assert ":run:" not in plain and "Re-review" not in plain

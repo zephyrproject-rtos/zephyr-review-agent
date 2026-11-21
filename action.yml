@@ -318,7 +318,7 @@ outputs:
   review_url:
     value: ${{ steps.review.outputs.review_url }}
   resolved_count:
-    description: "Earlier inline comments resolved because this run found they no longer apply."
+    description: "Earlier inline comments resolved because this run found they do not apply."
     value: ${{ steps.review.outputs.resolved_count }}
   inline_count:
     description: "Number of inline review comments posted."

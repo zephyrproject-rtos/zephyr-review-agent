@@ -336,9 +336,7 @@ def test_summary_counts_earlier_comments_and_answers_only_file_claims():
     run = RunResult(_review(), 2, Usage(), ["m"], False)
     pr = PullRequest(7, "t", "", "a", "main", "b" * 40, "pr", NEW_HEAD, "o/r", False)
     body = render_comment(_review(), run, pr, repo="o/r", tag="zephyr-reviewer", exclude_inline=True)
-    assert (
-        "Earlier inline comments re-checked at this head: 3 (1 resolved as no longer applying, 2 still open)." in body
-    )
+    assert "Earlier inline comments re-checked at this head: 3 (1 does not apply, 2 still open)." in body
     assert "### Claims checked (1 from notes.txt)" in body
     assert (
         "`a.c:3` leak" in body
@@ -401,7 +399,7 @@ def test_resolve_replies_then_resolves_only_refuted_earlier_comments():
     assert reply.startswith(answered_marker("zephyr-reviewer", NEW_HEAD) + "\n")
     reply = reply.split("\n", 1)[1]
     assert reply.startswith(
-        f"**No longer applies** · at {NEW_HEAD[:12]}\n\n"
+        f"**Does not apply** · at {NEW_HEAD[:12]}\n\n"
         "tests/lib/x/tests.yaml lines 9-11 already exclude those toolchains.\n\n<sub>"
     )
     assert "X4" not in reply and "C7" not in reply
@@ -464,7 +462,7 @@ def test_reply_is_short_and_in_the_comments_register():
     assert reply_text("") == ""
     body = reply_body("t", NEW_HEAD, "the guard was added. It runs first. Third.")
     assert body == (
-        f"{answered_marker('t', NEW_HEAD)}\n**No longer applies** · at {NEW_HEAD[:12]}\n\n"
+        f"{answered_marker('t', NEW_HEAD)}\n**Does not apply** · at {NEW_HEAD[:12]}\n\n"
         "The guard was added. It runs first.\n\n<sub>AI review, advisory; verify before acting on it.</sub>"
     )
     assert reply_body("t", NEW_HEAD, "").count("\n") == 3  # title line, blank, advisory: nothing else to say
@@ -490,7 +488,7 @@ def test_publish_posts_then_resolves_and_reports_the_count():
     assert [m for m in logs if m.startswith("X")] == [
         f"X2 ({FILE}:17 Ignored return value): still applies, thread left open",
         f"X3 ({FILE}:19 Missing lock): still applies, thread left open",
-        f"X4 ({FILE}:20 Stale comment): no longer applies, thread answered and resolved: Claim X4 is refuted: "
+        f"X4 ({FILE}:20 Stale comment): does not apply, thread answered and resolved: Claim X4 is refuted: "
         "tests/lib/x/tests.yaml lines 9-11 already exclude those toolchains (see C7)",
     ]
     paths = [p for _, p, _ in seen if _ == "POST" or True]
@@ -519,7 +517,7 @@ def test_never_and_unconfirmed_ask_resolve_nothing():
         claims=_claims(),
     )
     assert out["resolved_count"] == 0 and seen == []
-    assert any("1 earlier inline comment(s) will be resolved as no longer applying if you post" in m for m in logs)
+    assert any("1 earlier inline comment(s) will be resolved as not applying if you post" in m for m in logs)
 
 
 def test_post_saved_resolves_from_the_saved_claims(tmp_path):
