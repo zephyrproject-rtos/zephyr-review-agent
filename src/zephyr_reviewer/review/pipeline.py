@@ -792,7 +792,7 @@ async def run_pipeline(
     specialists: list[str] | None = None,
     specialist_max_steps: int = 20,
     verify_max_steps: int = 12,
-    hard_case_max_steps: int = 12,
+    hard_case_max_steps: int = 20,
     report_max_steps: int = 6,
     max_hard_cases: int = 8,
     max_context_tokens: int = 160_000,

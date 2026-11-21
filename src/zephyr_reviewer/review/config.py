@@ -52,7 +52,7 @@ class ReviewConfig:
     verify_max_steps: int = 15
     dossier_chars: int = 40_000
     specialist_max_steps: int = 20
-    hard_case_max_steps: int = 12
+    hard_case_max_steps: int = 20
     max_hard_cases: int = 8
     specialists: list[str] = field(default_factory=list)  # empty: planned from the change
     temperature: float = 0.1

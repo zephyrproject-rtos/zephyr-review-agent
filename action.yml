@@ -65,8 +65,12 @@ inputs:
     required: false
     default: "20"
   hard_case_max_steps:
+    description: >-
+      multi-stage: steps one hard case may take. A case that uses them all is made to submit, and
+      such a verdict is provisional: its finding is speculative, and it neither closes nor upholds
+      an earlier comment.
     required: false
-    default: "12"
+    default: "20"
   max_hard_cases:
     description: >-
       multi-stage: hard cases verified individually, each in its own agent run; the rest share one
