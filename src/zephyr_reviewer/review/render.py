@@ -221,6 +221,9 @@ def render_comment(
         posted(review.summary),
         "",
     ]
+    lost = lost_passes_line(run)
+    if lost:
+        out += [lost, ""]
     if inline:
         counts = ", ".join(
             f"{n} {sev}" for sev, n in ((s, sum(1 for f in inline if f.severity == s)) for s in SEVERITIES) if n
@@ -424,6 +427,19 @@ def refuted_candidates(run: RunResult) -> list[tuple[str, str, str]]:
         if c.get("fate") == "refuted":
             out.append((str(c.get("title") or ""), str(c.get("stage") or ""), str(c.get("reason") or "").strip()))
     return out
+
+
+def lost_passes_line(run: RunResult) -> str:
+    """One line when review passes of the specialist pipeline returned nothing, so that a reader does not
+    take the review for more complete than it is. It counts, and names neither stage nor model."""
+    passes = (run.review_map or {}).get("passes") or {}
+    try:
+        planned, lost = int(passes.get("planned") or 0), int(passes.get("lost") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if lost <= 0 or planned <= 0:
+        return ""
+    return f"{lost} of {planned} planned review passes returned no result."
 
 
 def earlier_comments_line(earlier: list[ClaimVerdict]) -> str:

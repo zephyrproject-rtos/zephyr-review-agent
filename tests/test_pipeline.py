@@ -1075,6 +1075,97 @@ async def test_a_leader_that_fails_or_stalls_does_not_hold_the_others_back():
     assert await primed(None, fine) == "ran"  # no primer: runs at once
 
 
+class LosingRouter(EnsembleRouter):
+    """A router on which every specialist pass of the models in ``lose`` fails."""
+
+    def __init__(self, lose: tuple[str, ...]):
+        super().__init__(verification_first_attempt_bad=False)
+        self.lose = lose
+
+    def handler(self, request):
+        body = json.loads(request.content)
+        tools = {t["function"]["name"] for t in body.get("tools") or []}
+        if "submit_concerns" in tools and body.get("model") in self.lose:
+            return httpx.Response(400, json={"error": {"message": "Provider returned error", "code": 400}})
+        return super().handler(request)
+
+
+async def _run_ensemble(router, mini_repo, logs: list[str], **kw):
+    intel = SourceIntel(str(mini_repo["root"]), mini_repo["head"], mini_repo["base"])
+    pr = PullRequest(7, "t", "", "", "main", mini_repo["base"], "pr", mini_repo["head"], "o/r", False)
+    opening = opening_message(pr, intel.overview(), intel.diff_text, "", repo="o/r")
+    llms = []
+    for name in ("cheap/model", "second/model", "strong/model"):
+        llm = _llm(ScriptedOpenRouter([]), models=(name,))
+        llm._client = httpx.Client(transport=httpx.MockTransport(router.handler))
+        llms.append(llm)
+    cheap, second, strong = llms
+    async with ToolBridge(build_server(intel)) as bridge:
+        run = await run_pipeline(
+            cheap,
+            strong,
+            bridge,
+            system_prompt(load_profile("zephyr"), "English"),
+            opening,
+            {f.path: f.new_side_lines for f in intel.files},
+            changed_files=[f.path for f in intel.files],
+            added_text="",
+            specialists=["intent", "concurrency", "build_config"],
+            ensemble=[second],
+            log=logs.append,
+            quiet=True,
+            **kw,
+        )
+    return run, pr
+
+
+async def test_passes_that_return_nothing_are_counted_and_lower_the_confidence(mini_repo):
+    from zephyr_reviewer.review.render import render_comment
+
+    # Nothing lost and no speculative finding: the report's "high" stands, and the summary says nothing.
+    logs: list[str] = []
+    run, pr = await _run_ensemble(LosingRouter(()), mini_repo, logs)
+    assert run.review_map["passes"] == {"planned": 6, "lost": 0} and run.review.confidence == "high"
+    assert not any(f.speculative for f in run.review.findings) and not any("::warning::" in m for m in logs)
+    assert "returned no result" not in render_comment(run.review, run, pr, repo="o/r", tag="t")
+
+    # One model's three passes fail: the other model's stand, and the reader is told what is missing.
+    logs = []
+    run, pr = await _run_ensemble(LosingRouter(("second/model",)), mini_repo, logs)
+    assert run.review is not None and run.review_map["passes"] == {"planned": 6, "lost": 3}
+    assert run.review.confidence == "medium"  # the report said high; it was not told what was lost
+    warnings = [m for m in logs if m.startswith("::warning::review pass ")]
+    assert len(warnings) == 3 and all("@second/model returned no result: model request failed" in m for m in warnings)
+    body = render_comment(run.review, run, pr, repo="o/r", tag="t")
+    assert "3 of 6 planned review passes returned no result." in body
+    assert "second/model" not in body and "intent" not in body  # a count, no stage and no model
+
+
+async def test_a_speculative_finding_keeps_the_confidence_from_being_high(mini_repo):
+    logs: list[str] = []
+    run = await _run_with(StageRouter(verification_first_attempt_bad=False), mini_repo, logs)
+    assert run.review_map["passes"]["lost"] == 0 and any(f.speculative for f in run.review.findings)
+    assert run.review.confidence == "medium"  # the scripted report says high
+
+
+async def test_when_every_pass_returns_nothing_there_is_no_review(mini_repo):
+    logs: list[str] = []
+    router = LosingRouter(("cheap/model", "second/model"))
+    run, _ = await _run_ensemble(router, mini_repo, logs)
+    assert run.review is None  # not an empty review, which would read "No findings reported"
+    assert run.errors[-1] == "none of the 6 review pass(es) returned a result, so there is no review"
+    assert run.review_map["passes"] == {"planned": 6, "lost": 6}
+    tools = [{t["function"]["name"] for t in r["tools"]} for r in router.requests]
+    assert not any({"submit_verification", "submit_report"} & t for t in tools)
+    # With an earlier comment to re-check there is still something to verify and to answer.
+    claim = Claim(
+        "X1", "drivers/i2c/Kconfig:20: I2C_BUS_RECOVERY is selected but never defined", "drivers/i2c/Kconfig", 20
+    )
+    run, _ = await _run_ensemble(LosingRouter(("cheap/model", "second/model")), mini_repo, [], claims=[claim])
+    assert run.review is not None and [c.verdict for c in run.review.external_claims] == ["confirmed"]
+    assert run.review.confidence == "medium"
+
+
 class FailingVerification(StageRouter):
     """A router whose verification stage gets a provider error for its first ``failures`` requests."""
 

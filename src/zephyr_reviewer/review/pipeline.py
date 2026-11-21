@@ -872,6 +872,7 @@ async def run_pipeline(
     results = await asyncio.gather(*(specialist(*j) for j in jobs))
     concerns: list[Concern] = []
     dismissals: list[Dismissal] = []
+    lost: list[str] = []  # passes that returned nothing: what they would have looked at was not looked at
     for name, label, res in results:
         usages.append(res.usage)
         models += [m for m in res.models_used if m not in models]
@@ -880,6 +881,8 @@ async def run_pipeline(
         if res.output is None:
             errors.append(f"specialist {label} did not submit: {'; '.join(res.errors)}")
             records.append(_stage_record(name, res, {**extra, "concerns": [], "dismissed": []}))
+            lost.append(label)
+            log(f"::warning::review pass {label} returned no result: {'; '.join(res.errors) or 'no reason given'}")
             continue
         ids_c, ids_d = [], []
         for c in res.output["concerns"]:
@@ -904,6 +907,28 @@ async def run_pipeline(
         f"specialists produced {len(concerns)} concern(s) and {len(dismissals)} dismissal(s)"
         + (f" ({raised} raised before merging duplicates)" if raised != len(concerns) else "")
     )
+    passes = {"planned": len(jobs), "lost": len(lost)}
+    if jobs and len(lost) == len(jobs) and not claims:
+        # Nothing looked at the change. An empty list of findings would read as "No findings reported".
+        errors.append(f"none of the {len(jobs)} review pass(es) returned a result, so there is no review")
+        return RunResult(
+            review=None,
+            steps=sum(r["steps"] for r in records),
+            usage=_sum_usage(usages),
+            models_used=models,
+            forced=any(r["forced"] for r in records),
+            errors=errors,
+            transcript=transcript,
+            seconds=time.monotonic() - started,
+            stages=records,
+            review_map={
+                "specialists": stages,
+                "drafters": drafters,
+                "passes": passes,
+                "concerns": [],
+                "stages": records,
+            },
+        )
 
     # Candidates an earlier run already refuted on code that has not changed keep that verdict: sending
     # them through verification and a hard case again would pay for the same investigation twice.
@@ -995,6 +1020,7 @@ async def run_pipeline(
                 review_map={
                     "specialists": stages,
                     "drafters": drafters,
+                    "passes": passes,
                     "concerns": [
                         {
                             "id": c.id,
@@ -1207,10 +1233,15 @@ async def run_pipeline(
         review.verdict = "request_changes"
     elif not review.findings and review.verdict == "request_changes":
         review.verdict = "approve"
+    # Nor is the confidence the report's alone to state. It is told which passes were planned, not which
+    # of them returned nothing, and it has put "high" over a finding marked speculative.
+    if review.confidence == "high" and (lost or any(f.speculative for f in review.findings)):
+        review.confidence = "medium"
 
     review_map = {
         "specialists": stages,
         "drafters": drafters,
+        "passes": passes,
         "concerns": [
             {
                 "id": c.id,

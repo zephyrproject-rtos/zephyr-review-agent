@@ -509,6 +509,12 @@ In the specialist pipeline that includes a verification stage that does not subm
 repeat of the stage: it is where candidates are checked, merged and weighed, and without it
 there is no review to post. `review_map.json` keeps what the specialists raised, as `unverified`.
 
+A specialist pass that returns nothing does not fail the run while others returned something,
+but it is not passed over either: the job log has a warning for each, the summary says how many
+there were ("3 of 6 planned review passes returned no result."), and the review's confidence is
+at most medium, as it is whenever a finding is speculative. When every pass returns nothing and
+there is no earlier comment to re-check, there is no review, and nothing is posted.
+
 ### Issues only
 
 The review reports problems and nothing else. The summary states the result and the key issue
