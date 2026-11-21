@@ -1102,8 +1102,10 @@ async def run_pipeline(
                 records.append(_stage_record(label, res, {"verdict": "undecided"}))
                 continue
             # One verdict per case: a single case answers with submit_hard_case_verdict, a batch with an
-            # entry per case. A forced submission (budget exhausted) is recorded as such: it decides a
-            # concern, but it is not evidence enough to close an earlier review comment.
+            # entry per case. A forced submission (budget exhausted) is recorded as such. The case was not
+            # worked to its end, so its verdict is provisional either way: a confirmed finding is reported
+            # as speculative, an earlier review comment is neither closed nor upheld by it, and a
+            # refutation is not what a later run may build on.
             if len(batch) == 1:
                 verdicts = [{**res.output, "case": batch[0].id}]
             else:
@@ -1113,7 +1115,8 @@ async def run_pipeline(
                 case_ids = by_case[v["case"]].source_ids
                 if v["verdict"] == "confirmed":
                     fid = f"HF{len(final) + 1}"
-                    final.append({**v["finding"], "source_ids": case_ids, "_id": fid})
+                    finding = {**v["finding"], "speculative": True} if res.forced else v["finding"]
+                    final.append({**finding, "source_ids": case_ids, "_id": fid})
                     fate = {"fate": "confirmed", "by": label, "as": fid, "reason": v["reason"]}
                 else:
                     refuted_now += 1
@@ -1151,8 +1154,10 @@ async def run_pipeline(
         reason = str(fate.get("reason") or fate.get("note") or "")
         if kind == "confirmed" and fate.get("note"):
             verdict = "undecided"  # kept as speculative because the hard case could not decide
-        if kind == "refuted" and fate.get("forced"):
-            verdict = "undecided"  # squeezed out at the end of the budget: not enough to close anything
+        if kind in ("confirmed", "refuted") and fate.get("forced"):
+            # Squeezed out at the end of the budget: not enough to close the thread, and not enough to tell
+            # the person who replied in it that the comment still applies.
+            verdict = "undecided"
             reason = "the verification ran out of budget before it could decide; left open"
         verdicts.append(
             ClaimVerdict(

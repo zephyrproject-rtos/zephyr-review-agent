@@ -79,7 +79,9 @@ def parse_record(record: dict[str, Any], review_map: dict[str, Any] | None, orig
 
     m = review_map if isinstance(review_map, dict) else {}
     for c in m.get("concerns") or []:
-        if isinstance(c, dict) and c.get("fate") == "refuted":
+        # A refutation a hard case was forced to submit when its budget ran out is provisional: carried
+        # on, it would keep the candidate from being verified again for as long as its file does not change.
+        if isinstance(c, dict) and c.get("fate") == "refuted" and not c.get("forced"):
             add(c.get("file"), c.get("line"), c.get("title"), c.get("reason"), head)
     for c in m.get("refuted_earlier") or []:
         if isinstance(c, dict):

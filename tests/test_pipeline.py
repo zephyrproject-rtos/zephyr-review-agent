@@ -1159,3 +1159,79 @@ async def test_the_record_of_a_run_without_verification_keeps_what_an_earlier_ru
     fates = {c["id"]: (c["fate"], c.get("reason", "")) for c in run.review_map["concerns"]}
     assert fates[first["id"]] == ("refuted", "the lock is released")
     assert {fates[c["id"]] for c in others} == {("unverified", "")}
+
+
+class SureOfItRouter(EnsembleRouter):
+    """A router whose hard case on the Kconfig select confirms it as a plain high finding."""
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        tools = {t["function"]["name"] for t in body.get("tools") or []}
+        case = body["messages"][1]["content"].split("## Hard case", 1)[-1]
+        if "submit_hard_case_verdict" in tools and "I2C_BUS_RECOVERY" in case:
+            self.requests.append(body)
+            finding = _finding(
+                "select of undefined I2C_BUS_RECOVERY", file="drivers/i2c/Kconfig", line=20, severity="high"
+            )
+            verdict = {"verdict": "confirmed", "reason": "kconfig_symbol shows no definition", "finding": finding}
+            call = _tc("h", "submit_hard_case_verdict", verdict)
+            return httpx.Response(200, json=_completion({"content": "", "tool_calls": [call]}, prompt_tokens=200))
+        return super().handler(request)
+
+
+async def test_a_hard_case_out_of_budget_decides_nothing_about_an_earlier_comment(mini_repo):
+    router = SureOfItRouter(verification_first_attempt_bad=False)
+    intel = SourceIntel(str(mini_repo["root"]), mini_repo["head"], mini_repo["base"])
+    pr = PullRequest(0, "t", "", "", "main", mini_repo["base"], "pr", mini_repo["head"], "", False)
+    opening = opening_message(pr, intel.overview(), intel.diff_text, "", repo="o/r")
+    cheap = _llm(ScriptedOpenRouter([]), models=("cheap/model",))
+    strong = _llm(ScriptedOpenRouter([]), models=("strong/model",))
+    for llm in (cheap, strong):
+        llm._client = httpx.Client(transport=httpx.MockTransport(router.handler))
+    claims = [
+        Claim(
+            "X1", "drivers/i2c/Kconfig:20: I2C_BUS_RECOVERY is selected but never defined", "drivers/i2c/Kconfig", 20
+        ),
+        Claim("X2", "drivers/i2c/i2c_foo.c:30: the semaphore count is wrong", "drivers/i2c/i2c_foo.c", 30),
+    ]
+
+    async def run(steps: int):
+        async with ToolBridge(build_server(intel)) as bridge:
+            return await run_pipeline(
+                cheap,
+                strong,
+                bridge,
+                system_prompt(load_profile("zephyr"), "English"),
+                opening,
+                {f.path: f.new_side_lines for f in intel.files},
+                changed_files=[f.path for f in intel.files],
+                added_text="",
+                specialists=["intent"],
+                claims=claims,
+                hard_case_max_steps=steps,
+                log=lambda m: None,
+            )
+
+    def kconfig_finding(result) -> tuple[str, bool]:
+        f = next(f for f in result.review.findings if f.title == "select of undefined I2C_BUS_RECOVERY")
+        return f.severity, f.speculative
+
+    # With budget to spare the scripted hard cases confirm X1 and refute X2, and that stands.
+    settled = await run(12)
+    assert {c.id: c.verdict for c in settled.review.external_claims} == {"X1": "confirmed", "X2": "refuted"}
+    assert kconfig_finding(settled) == ("high", False)
+
+    # The same verdicts from a first and last step are what the model had when the budget ran out.
+    forced = await run(1)
+    verdicts = {c.id: c for c in forced.review.external_claims}
+    assert {k: v.verdict for k, v in verdicts.items()} == {"X1": "undecided", "X2": "undecided"}
+    assert all(
+        v.reason == "the verification ran out of budget before it could decide; left open" for v in verdicts.values()
+    )
+    # The finding is kept, as the open question it is (speculative, so at most medium), and still tied to
+    # the comment it came from.
+    assert kconfig_finding(forced) == ("medium", True) and verdicts["X1"].finding_id.startswith("HF")
+    # The record says how each was decided; a later run does not take the refutation over.
+    xmap = {c["id"]: c for c in forced.review_map["external_claims"]}
+    assert (xmap["X1"]["fate"], xmap["X2"]["fate"]) == ("confirmed", "refuted")
+    assert xmap["X1"]["forced"] is True and xmap["X2"]["forced"] is True

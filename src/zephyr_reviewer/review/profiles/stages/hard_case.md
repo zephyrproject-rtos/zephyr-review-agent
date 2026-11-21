@@ -33,3 +33,6 @@ nothing by itself; a deliberate choice with a real consequence is still a findin
 
 Do not split the difference. If after honest investigation you cannot refute it and cannot confirm
 it, confirm it as speculative; the author can judge, and burying a real bug is the worse error.
+Then `problem` names the link of the path you could not check (the caller you did not find, the
+part of the function you did not read, the configuration you could not establish), so the author
+knows where to look first.

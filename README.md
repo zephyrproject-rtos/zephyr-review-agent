@@ -347,6 +347,11 @@ never in the summary comment, which only counts them ("Earlier inline comments r
 head: 3 (1 resolved as no longer applying, 2 still open)"); the "Claims checked" section is for
 claims from `--findings` only.
 
+A verdict the verifier was forced to submit when its budget ran out is provisional whichever
+way it went. A confirmation leaves the earlier comment undecided too: nobody in its thread is
+told that it still applies, and the finding kept from it is speculative and not posted a second
+time. A later run does not take a forced refutation over as settled.
+
 When someone replied in the thread of an earlier comment, the reply travels with the claim as
 untrusted data: the author explaining why the code is as it is, or a reviewer disputing the
 finding, labelled with their role and trust level. The re-check weighs it against the code, since

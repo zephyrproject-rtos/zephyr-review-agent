@@ -130,6 +130,14 @@ def test_the_record_gives_what_was_refuted_then_and_before():
     many = {"concerns": [{"title": f"t {i}", "file": "f.c", "fate": "refuted", "reason": "r"} for i in range(200)]}
     assert len(parse_record(_record(), many).refuted) == MAX_REFUTED
     assert parse_record(_record(), None).refuted == []
+    # A refutation a hard case was forced to submit is provisional: it is not what a later run builds on.
+    forced = _map()
+    forced["concerns"][0]["forced"] = True
+    assert [r.title for r in parse_record(_record(), forced).refuted] == [
+        "select of BAR is undefined",
+        "Title underline too short",
+        "lock is not released!",  # an earlier run's own refutation of the same point, carried as before
+    ]
 
 
 def test_a_refutation_stands_only_where_the_file_did_not_change():

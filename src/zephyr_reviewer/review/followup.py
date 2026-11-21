@@ -444,10 +444,13 @@ def confirming_finding(review: Review, claim: Claim) -> Finding | None:
 
 
 def reposted_markers(review: Review, claims: list[Claim], tag: str) -> set[str]:
-    """Markers of the new findings that confirm an earlier comment whose thread is still open; posting
-    them would put the same finding on the pull request twice."""
-    confirmed = {v.id for v in review.external_claims if v.verdict == "confirmed"}
-    still_open = {c.id: c for c in claims if is_followup(c) and c.id in confirmed}
+    """Markers of the new findings that restate an earlier comment whose thread is still open; posting
+    them would put the same finding on the pull request twice. That is a comment the run confirmed, and
+    one it left undecided but kept as a finding (a hard case that ran out of budget)."""
+    kept = {
+        v.id for v in review.external_claims if v.verdict == "confirmed" or (v.verdict == "undecided" and v.finding_id)
+    }
+    still_open = {c.id: c for c in claims if is_followup(c) and c.id in kept}
     if not still_open:
         return set()
     titles = {(c.file, normalize_title(c.title)) for c in still_open.values()}

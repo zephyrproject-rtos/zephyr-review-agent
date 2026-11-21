@@ -21,6 +21,7 @@ from zephyr_reviewer.review.followup import (
     as_claims,
     open_findings,
     parse_posted,
+    pending_answers,
     pending_resolutions,
     replied_marker,
     reply_body,
@@ -330,6 +331,31 @@ def test_findings_that_confirm_an_open_thread_are_not_posted_again():
     kept = [c for c in inline if not any(m in c["body"] for m in skip)]
     assert [c["line"] for c in kept] == [18]
     assert [c.id for c, _ in pending_resolutions(_review(), _claims())] == ["X4"]
+
+
+def test_a_comment_left_undecided_but_kept_as_a_finding_is_neither_posted_again_nor_answered():
+    # A hard case that ran out of budget "confirmed" X2 after a person had disputed it in the thread.
+    review = _review()
+    x2 = next(v for v in review.external_claims if v.id == "X2")
+    x2.verdict, x2.finding_id = "undecided", "HF1"
+    x2.reason = "the verification ran out of budget before it could decide; left open"
+    claims = _claims()
+    next(c for c in claims if c.id == "X2").extra["unanswered"] = True
+    # Its finding is in the review, and its thread is open: a second inline comment would repeat it.
+    skip = reposted_markers(review, claims, "zephyr-reviewer")
+    kept = [c for c in inline_comments(review, "zephyr-reviewer") if not any(m in c["body"] for m in skip)]
+    assert [c["line"] for c in kept] == [18]
+    # Nobody is told "Still applies" on the strength of it, and the thread is not closed.
+    assert pending_answers(review, claims) == []
+    assert [c.id for c, _ in pending_resolutions(review, claims)] == ["X4"]
+    # An undecided comment that did not become a finding has nothing in the review to hold back.
+    x2.finding_id = ""
+    kept = [
+        c["line"]
+        for c in inline_comments(review, "zephyr-reviewer")
+        if not any(m in c["body"] for m in reposted_markers(review, claims, "zephyr-reviewer"))
+    ]
+    assert kept == [17, 18]
 
 
 def test_summary_counts_earlier_comments_and_answers_only_file_claims():
