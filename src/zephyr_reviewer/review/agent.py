@@ -14,7 +14,7 @@ from typing import Any
 
 from .mcp_client import ToolBridge
 from .openrouter import ContextLengthError, OpenRouter, OpenRouterError, Usage, assistant_message_for_history
-from .prompts import budget_exhausted, nudge, rejection_message
+from .prompts import budget_exhausted, cut_off, nudge, rejection_message
 from .schema import SUBMIT_REVIEW_TOOL, SUBMIT_TOOL_NAME, Review, parse_review
 from .text import without_surrogates
 
@@ -148,6 +148,10 @@ async def run_agent(
     tool_results: list[dict[str, Any]] = []
     compactions = 0
     forced_misses = 0
+    cut_offs = 0  # answers in a row that ended at the output limit with nothing in them
+    forced_cut_offs = 0  # ... of them while the model was asked to submit
+    reasoning: dict[str, Any] | None = None  # the model's default until an answer is cut off
+    reasoning_refused = False  # a request asking for less reasoning failed: not every route takes the field
 
     def done(output: Any, step: int) -> AgentResult:
         seconds = time.monotonic() - started
@@ -224,8 +228,13 @@ async def run_agent(
         detail(f"{tag}[step {step}] waiting for {llm.models[0]} ({len(messages)} messages, ~{approx_tokens:,} tokens)")
         t_call = time.monotonic()
         try:
-            result = await _chat_with_heartbeat(llm, messages, tools, tool_choice, detail, tag, step)
+            result = await _chat_with_heartbeat(llm, messages, tools, tool_choice, detail, tag, step, reasoning)
         except ContextLengthError as exc:
+            if reasoning is not None and _refuses_reasoning(exc):
+                # A refusal of the field worded like a size limit: not a history to compact.
+                reasoning, reasoning_refused = None, True
+                detail(f"{tag}[step {step}] request with a reasoning effort failed; retrying without")
+                continue
             compactions += 1
             # First elide older tool results and retry; then everything and force submission; then give up.
             elided = compact_history(messages, keep_recent=4) if compactions == 1 else 0
@@ -243,6 +252,13 @@ async def run_agent(
             detail(f"{tag}[step {step}] {errors[-1]}")
             return done(None, step)
         except OpenRouterError as exc:
+            if reasoning is not None and _refuses_reasoning(exc) and step < max_steps + GRACE_STEPS:
+                # Asking for less reasoning is a remedy, not a requirement: a route that rejects the field
+                # gets the request again without it, at the cost of this step. Any other failure is what it
+                # would be without the field, and so is a rejection with no step left to retry in.
+                reasoning, reasoning_refused = None, True
+                detail(f"{tag}[step {step}] request with a reasoning effort failed; retrying without")
+                continue
             errors.append(f"model request failed: {str(exc)[:500]}")
             detail(f"{tag}[step {step}] {errors[-1]}")
             return done(None, step)
@@ -258,6 +274,51 @@ async def run_agent(
             f"{tag}[step {step}] {result.model or llm.models[0]} answered in {time.monotonic() - t_call:.1f}s "
             f"({len(result.tool_calls)} tool call(s), {last_prompt_tokens:,} prompt tokens)"
         )
+        if _cut_off(result, llm):
+            # The output limit covers reasoning and answer together, and nothing but reasoning fit. The turn
+            # is not kept: its reasoning, sent back, makes every later request that much longer and leads
+            # to the same end. The request is made again from the history as it was, asking for less
+            # reasoning from here on (changing the effort once costs the cached prefix once; changing it
+            # back would cost it again).
+            cut_offs += 1
+            transcript.append(
+                {
+                    "kind": "assistant",
+                    "step": step,
+                    "model": result.model,
+                    "content": "",
+                    "tool_calls": [],
+                    "usage": result.usage,
+                    "cut_off": True,
+                }
+            )
+            detail(f"{tag}[step {step}] the answer ended at the output limit with nothing in it ({cut_offs} in a row)")
+            if not reasoning_refused:
+                reasoning = LESS_REASONING
+            if forced:
+                # As for any empty answer to a forced choice: after two, any tool will do. A run that is
+                # asked to submit this many times and never gets an answer through has nothing to give.
+                forced_misses += 1
+                forced_cut_offs += 1
+                if forced_cut_offs >= MAX_FORCED_CUT_OFFS:
+                    errors.append(
+                        f"{cut_offs} answers in a row ended at the output limit with nothing in them, "
+                        f"{forced_cut_offs} of them when asked to submit"
+                    )
+                    return done(None, step)
+            elif cut_offs >= MAX_CUT_OFFS:
+                # Investigating further is not getting anywhere; what the run has so far is still worth asking for.
+                forced = True
+                detail(f"{tag}[step {step}] forcing {terminal.name}")
+                last = messages[-1]
+                if last.get("role") == "user" and isinstance(last.get("content"), str):
+                    # Nothing was kept of the cut-off turns, so the history may end in the opening message:
+                    # the instruction joins it rather than follow it as a second user message in a row.
+                    messages[-1] = {**last, "content": last["content"] + "\n\n" + cut_off(terminal.name)}
+                else:
+                    messages.append({"role": "user", "content": cut_off(terminal.name)})
+            continue
+        cut_offs = forced_cut_offs = 0
         messages.append(assistant_message_for_history(result.message))
         transcript.append(
             {
@@ -330,8 +391,33 @@ async def run_agent(
     return done(None, max_steps + GRACE_STEPS)
 
 
+MAX_CUT_OFFS = 2  # answers in a row cut off with nothing in them before the model is asked to submit
+LESS_REASONING = {"effort": "low"}  # OpenRouter: about a fifth of the output limit, the rest is for the answer
+
+
+def _refuses_reasoning(exc: Exception) -> bool:
+    """A failed request that names the reasoning field as its reason: the route does not take it. A
+    transient failure, a rejected key or a full context says nothing about the field."""
+    text = str(exc).lower()
+    return "reasoning" in text and "giving up after" not in text
+
+
+def _cut_off(result, llm) -> bool:
+    """An answer that ended at the output limit with neither text nor a tool call in it. The limit covers
+    a model's reasoning too, so this is what reasoning that used all of it looks like. Another reason to
+    end (a content filter, an error, a stop of the model's own) is not this, whatever the token count;
+    without a reason given, having used the whole limit says it."""
+    if result.tool_calls or result.content.strip():
+        return False
+    if result.finish_reason:
+        return result.finish_reason == "length"
+    limit = int(getattr(llm, "max_tokens", 0) or 0)
+    return limit > 0 and int((result.usage or {}).get("completion_tokens") or 0) >= limit
+
+
 HEARTBEAT_SECONDS = 30.0
 GRACE_STEPS = 3  # extra turns after the step budget, all forced to the terminal tool
+MAX_FORCED_CUT_OFFS = GRACE_STEPS + 1  # cut-off answers in a row when asked to submit: as many tries as a run gets
 
 
 async def _with_heartbeat(awaitable, on_wait):
@@ -346,10 +432,10 @@ async def _with_heartbeat(awaitable, on_wait):
         on_wait(waited)
 
 
-async def _chat_with_heartbeat(llm, messages, tools, tool_choice, log, tag: str, step: int):
+async def _chat_with_heartbeat(llm, messages, tools, tool_choice, log, tag: str, step: int, reasoning=None):
     """Run the blocking model call in a thread; say so periodically while it is outstanding."""
     return await _with_heartbeat(
-        asyncio.to_thread(llm.chat, messages, tools, tool_choice),
+        asyncio.to_thread(llm.chat, messages, tools, tool_choice, reasoning),
         lambda waited: log(
             f"{tag}[step {step}] still waiting for {llm.models[0]} ({waited:.0f}s; request timeout {llm.timeout:.0f}s)"
         ),

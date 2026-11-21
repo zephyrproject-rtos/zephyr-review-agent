@@ -139,7 +139,11 @@ nothing from the tree is executed. That is what makes it safe to run on a fork's
    diff when it fits.
 3. The model investigates with the tools. Each turn may issue several calls; results go back with
    their `tool_call_id`. A step budget and a prompt-size budget bound the cost; when either runs out
-   the model is forced to submit.
+   the model is forced to submit. `max_tokens` bounds each answer, and with a reasoning model it
+   covers the reasoning too: an answer whose reasoning used all of it arrives empty. Such a turn is
+   left out of the history and the request is made again, asking for less reasoning from then on.
+   Two in a row and the model is asked to submit what it has; four more in a row and its run ends
+   without a result.
 4. The existing discussion (comments, inline threads, review states) is digested into the opening
    message, with a `pr_discussion` tool for the full text, so the model builds on the review rather
    than restarting it.

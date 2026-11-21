@@ -319,6 +319,16 @@ def nudge(tool: str = SUBMIT_TOOL_NAME) -> str:
     return f"You replied with prose instead of a tool call. Continue with the tools, or call `{tool}` to finish."
 
 
+def cut_off(tool: str = SUBMIT_TOOL_NAME) -> str:
+    """After answers that ended at the output limit with nothing in them: the limit covers the model's
+    reasoning too. Investigating is not getting anywhere, so the run is asked for what it has."""
+    return (
+        "Your last answers reached the output limit before any text or tool call arrived; the limit covers "
+        f"your reasoning too. Decide in a few sentences and call `{tool}` now with what you have verified so "
+        "far. Lower `confidence` on anything you could not check, and drop what you could not support."
+    )
+
+
 def budget_exhausted(tool: str = SUBMIT_TOOL_NAME) -> str:
     return (
         f"The step budget is exhausted. Call `{tool}` now with what you have verified so far. "

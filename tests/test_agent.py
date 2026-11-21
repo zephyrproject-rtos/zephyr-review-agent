@@ -461,3 +461,145 @@ async def test_tool_calls_in_one_step_run_concurrently_and_answer_in_order(mini_
     assert "k_sem_take" in answers[1]["content"] and answers[3]["content"].startswith("ERROR: unknown tool")
     recorded = [t for t in run.transcript if t.get("kind") == "tool_call" and not t.get("terminal")]
     assert [t["name"] for t in recorded].count("slow") == 2 and all(t["seconds"] >= 0 for t in recorded)
+
+
+def _reasoned_away(finish_reason: str = "length") -> dict:
+    """A reply whose reasoning used the whole output limit: no text, no tool call."""
+    message = {"content": "", "reasoning_details": [{"type": "reasoning.text", "text": "thinking " * 4000}]}
+    reply = _completion(message)
+    reply["choices"][0]["finish_reason"] = finish_reason
+    reply["usage"]["completion_tokens"] = 8000
+    reply["usage"]["completion_tokens_details"] = {"reasoning_tokens": 8000}
+    return reply
+
+
+def _submit(call_id: str = "s") -> dict:
+    return _completion({"content": "", "tool_calls": [_tool_call(call_id, "submit_review", GOOD_REVIEW)]})
+
+
+NAMED = {"type": "function", "function": {"name": "submit_review"}}
+
+
+async def test_an_answer_reasoned_away_is_asked_for_again_with_less_reasoning(mini_repo):
+    read = _tool_call("c1", "read_file", {"path": "drivers/i2c/i2c_foo.c", "start_line": 9, "end_line": 21})
+    script = ScriptedOpenRouter([_completion({"content": "", "tool_calls": [read]}), _reasoned_away(), _submit()])
+    run, _, _ = await _run(mini_repo, script)
+    assert run.review is not None and run.errors == [] and run.steps == 3
+    first, second, third = script.requests
+    # The same request again: nothing of the lost turn is in the history, not its 8000 tokens of reasoning
+    # and no word put in the model's mouth. It only asks for less reasoning, from here on.
+    assert third["messages"] == second["messages"] and "thinking thinking" not in json.dumps(third["messages"])
+    assert "reasoning" not in first and "reasoning" not in second and third["reasoning"] == {"effort": "low"}
+    assert [r["tool_choice"] for r in script.requests] == ["auto", "auto", "auto"]
+    cut = [t for t in run.transcript if t.get("cut_off")]
+    assert len(cut) == 1 and cut[0]["step"] == 2 and cut[0]["usage"]["completion_tokens"] == 8000
+
+
+async def test_a_model_that_keeps_reasoning_its_answers_away_is_asked_to_submit_and_then_stopped(mini_repo):
+    script = ScriptedOpenRouter([_reasoned_away() for _ in range(40)])
+    run, _, _ = await _run(mini_repo, script, max_steps=25)
+    # Two tries at going on, four at submitting (twice the tool by name, then any tool): not 28 requests,
+    # each longer than the last.
+    assert run.review is None and len(script.requests) == 6
+    assert [r["tool_choice"] for r in script.requests] == ["auto", "auto", NAMED, NAMED, "required", "required"]
+    assert run.errors == [
+        "6 answers in a row ended at the output limit with nothing in them, 4 of them when asked to submit"
+    ]
+    sizes = [len(json.dumps(r["messages"])) for r in script.requests]
+    assert sizes[1] == sizes[0] and sizes[5] == sizes[2] and sizes[2] - sizes[1] < 500  # one sentence, once
+    # Nothing was kept of the two turns, so the instruction joins the opening message: no two user
+    # messages in a row, which some routes reject.
+    assert [m["role"] for m in script.requests[2]["messages"]] == ["system", "user"]
+    asked = script.requests[2]["messages"][-1]["content"]
+    assert asked.startswith(script.requests[0]["messages"][-1]["content"])
+    assert "reached the output limit before any text or tool call arrived" in asked
+    assert "call `submit_review` now" in asked
+    assert all(r.get("reasoning") == {"effort": "low"} for r in script.requests[1:])
+
+
+async def test_a_forced_submission_reasoned_away_still_gets_every_way_through(mini_repo):
+    # The step budget is used up; the model is asked for its review and reasons the answer away twice.
+    # As for any empty answer to a forced choice, the third request takes any tool.
+    script = ScriptedOpenRouter([_reasoned_away(), _reasoned_away(), _submit()])
+    run, _, _ = await _run(mini_repo, script, max_steps=1)
+    assert run.review is not None and run.forced
+    assert [r["tool_choice"] for r in script.requests] == [NAMED, NAMED, "required"]
+    # ... and the fourth is its last, as it is for a run without cut-off answers.
+    script = ScriptedOpenRouter([_reasoned_away() for _ in range(10)])
+    run, _, _ = await _run(mini_repo, script, max_steps=1)
+    assert run.review is None and len(script.requests) == 4
+    assert "4 of them when asked to submit" in run.errors[0]
+
+
+async def test_only_an_empty_answer_at_the_output_limit_counts_and_only_in_a_row(mini_repo):
+    read = _tool_call("c1", "read_file", {"path": "drivers/i2c/i2c_foo.c", "start_line": 9, "end_line": 21})
+    cut_text = _completion({"content": "The lock is"})  # cut off, but something arrived: prose, as before
+    cut_text["choices"][0]["finish_reason"] = "length"
+    filtered = _reasoned_away("content_filter")  # empty for another reason, whatever its token count
+    script = ScriptedOpenRouter(
+        [
+            _reasoned_away(),
+            _completion({"content": "", "tool_calls": [read]}),  # an answer in between starts the count again
+            _reasoned_away(""),  # no reason given, the whole limit used: the same thing
+            cut_text,
+            filtered,
+            _submit(),
+        ]
+    )
+    run, _, _ = await _run(mini_repo, script)
+    assert run.review is not None and len(script.requests) == 6
+    assert [t["step"] for t in run.transcript if t.get("cut_off")] == [1, 3]
+    assert [r["tool_choice"] for r in script.requests] == ["auto"] * 6  # never two in a row: never forced
+    nudges = [m["content"] for m in script.requests[5]["messages"] if m["role"] == "user"][-2:]
+    assert all("You replied with prose instead of a tool call" in n for n in nudges)
+
+
+async def test_a_route_that_refuses_the_reasoning_field_gets_the_request_without_it(mini_repo):
+    replies = [_reasoned_away(), _submit()]
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if "reasoning" in payload:
+            return httpx.Response(400, json={"error": {"message": "reasoning is not supported", "code": 400}})
+        return httpx.Response(200, json=replies.pop(0))
+
+    script = ScriptedOpenRouter([])
+    script.handler = handler  # type: ignore[method-assign]
+    run, _, _ = await _run(mini_repo, script)
+    assert run.review is not None and run.errors == []
+    assert ["reasoning" in r for r in requests] == [False, True, False]
+    assert requests[2]["messages"] == requests[0]["messages"]
+
+
+async def test_only_a_refusal_of_the_reasoning_field_is_retried_without_it(mini_repo):
+    def scripted(status: int, message: str):
+        requests: list[dict] = []
+        replies = [_reasoned_away(), _submit()]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            requests.append(payload)
+            if "reasoning" in payload:
+                return httpx.Response(status, json={"error": {"message": message, "code": status}})
+            return httpx.Response(200, json=replies.pop(0))
+
+        script = ScriptedOpenRouter([])
+        script.handler = handler  # type: ignore[method-assign]
+        return script, requests
+
+    # A rejected key is a rejected key with or without the field: the run fails as it would have.
+    script, requests = scripted(401, "No auth credentials found")
+    run, _, _ = await _run(mini_repo, script)
+    assert run.review is None and len(requests) == 2
+    assert run.errors and run.errors[0].startswith("model request failed: HTTP 401")
+    # So is an outage, after the attempts the client makes: no second round of them without the field.
+    script, requests = scripted(503, "overloaded")
+    run, _, _ = await _run(mini_repo, script)
+    assert run.review is None and run.errors[0].startswith("model request failed: HTTP 503")
+    assert ["reasoning" in r for r in requests] == [False, True, True]
+    # A refusal worded like a size limit is still a refusal of the field.
+    script, requests = scripted(400, "reasoning token limit is unsupported for this model")
+    run, _, _ = await _run(mini_repo, script)
+    assert run.review is not None and ["reasoning" in r for r in requests] == [False, True, False]

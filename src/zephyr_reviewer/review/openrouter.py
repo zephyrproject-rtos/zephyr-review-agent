@@ -150,7 +150,10 @@ class OpenRouter:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
+        reasoning: dict[str, Any] | None = None,
     ) -> ChatResult:
+        """``reasoning`` is OpenRouter's request field of that name (``{"effort": "low"}``); None leaves the
+        model's default. The output limit covers reasoning and the visible answer together."""
         payload: dict[str, Any] = {
             "model": self.models[0],
             "messages": messages,
@@ -166,6 +169,8 @@ class OpenRouter:
             payload["parallel_tool_calls"] = True
         if self.provider:
             payload["provider"] = self.provider
+        if reasoning:
+            payload["reasoning"] = reasoning
 
         last_error = ""
         for attempt in range(1, self.max_attempts + 1):
