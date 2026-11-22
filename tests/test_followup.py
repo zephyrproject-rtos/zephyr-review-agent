@@ -338,7 +338,7 @@ def test_a_comment_left_undecided_but_kept_as_a_finding_is_neither_posted_again_
     review = _review()
     x2 = next(v for v in review.external_claims if v.id == "X2")
     x2.verdict, x2.finding_id = "undecided", "HF1"
-    x2.reason = "the verification ran out of budget before it could decide; left open"
+    x2.reason = "the verification was limited and could not decide; left open"
     claims = _claims()
     next(c for c in claims if c.id == "X2").extra["unanswered"] = True
     # Its finding is in the review, and its thread is open: a second inline comment would repeat it.

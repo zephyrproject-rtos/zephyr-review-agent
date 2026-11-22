@@ -283,7 +283,7 @@ def run_progress(run: RunResult) -> str:
     """What a run did, without models, tokens or cost: safe for logs and summaries by default."""
     return (
         f"review finished: {run.steps} step(s), {run.tool_call_count} tool call(s), {run.seconds:.0f}s"
-        f"{' · budget exhausted, review forced' if run.forced else ''}"
+        f"{' · review limited' if run.forced else ''}"
     )
 
 
@@ -303,7 +303,7 @@ def run_details(run: RunResult, pr: PullRequest) -> str:
     return (
         f"Reviewed `{pr.head_sha[:12]}` {how} via OpenRouter · "
         f"{run.steps} step(s), {run.tool_call_count} tool call(s), {run.usage.total_tokens:,} tokens{cost} · "
-        f"{run.seconds:.0f}s{' · budget exhausted, review forced' if run.forced else ''}."
+        f"{run.seconds:.0f}s{' · review limited' if run.forced else ''}."
     )
 
 

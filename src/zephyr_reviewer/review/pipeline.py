@@ -1227,7 +1227,7 @@ async def run_pipeline(
             # Squeezed out at the end of the budget: not enough to close the thread, and not enough to tell
             # the person who replied in it that the comment still applies.
             verdict = "undecided"
-            reason = "the verification ran out of budget before it could decide; left open"
+            reason = "the verification was limited and could not decide; left open"
         verdicts.append(
             ClaimVerdict(
                 id=cl.id,
