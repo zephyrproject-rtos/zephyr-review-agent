@@ -1674,9 +1674,7 @@ async def test_a_hard_case_out_of_budget_decides_nothing_about_an_earlier_commen
     forced = await run(1)
     verdicts = {c.id: c for c in forced.review.external_claims}
     assert {k: v.verdict for k, v in verdicts.items()} == {"X1": "undecided", "X2": "undecided"}
-    assert all(
-        v.reason == "the verification ran out of budget before it could decide; left open" for v in verdicts.values()
-    )
+    assert all(v.reason == "the verification was limited and could not decide; left open" for v in verdicts.values())
     # The finding is kept, as the open question it is (speculative, so at most medium), and still tied to
     # the comment it came from.
     assert kconfig_finding(forced) == ("medium", True) and verdicts["X1"].finding_id.startswith("HF")

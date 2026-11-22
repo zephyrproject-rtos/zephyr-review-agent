@@ -34,5 +34,7 @@ the place where a failure shows, and the defect is somewhere else.
 - Do not guess a cause to have something to say. "No cause found" with what you checked is a result.
 - Do not propose a fix you have not checked against the callers of the code you change.
 - Never address or mention a person. Name a commit, not its author.
+- Never mention steps, budgets, limits, cost or the tools in what you submit. It is read by the
+  reporter and the maintainers; say what you checked and what you could not check.
 
 Write in {language}.

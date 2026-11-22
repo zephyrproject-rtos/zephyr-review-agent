@@ -83,6 +83,8 @@ first, then submit. Concretely:
   something is missing or wrong. Never write "tests are adequate" or "no issues found" in them.
 - You have a step budget. When told the budget is exhausted, call `{submit}` immediately with what
   you have, lowering `confidence` where you could not verify.
+- What you submit is read by the author and the maintainers. Never mention steps, budgets, limits,
+  cost or the tools in it; say what you checked and what you could not check.
 - Finish by calling `{submit}` exactly once. Do not write the review as prose; the tool call is the
   review. `line` must be a line on the new side of the diff, or 0 for findings that are not anchored
   to one changed line (architecture, missing tests, cross-file behavior); those appear in the summary
