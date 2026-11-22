@@ -25,7 +25,7 @@ from .text import without_surrogates
 
 
 def stdio_params(
-    repo_root: str, head: str, base: str, max_chars: int, python: str = sys.executable
+    repo_root: str, head: str, base: str, max_chars: int, python: str = sys.executable, *, history: bool = False
 ) -> StdioServerParameters:
     # The server must find this package the way this process did. The MCP client hands a subprocess a
     # reduced environment without PYTHONPATH, which is how the package is found when it runs from a
@@ -47,6 +47,7 @@ def stdio_params(
             base,
             "--max-chars",
             str(max_chars),
+            *(["--history"] if history else []),
         ],
     )
 
