@@ -77,11 +77,19 @@ class GitHub:
             self._client.headers.update(headers)
         self._permissions: dict[str, str] = {}
 
-    def _request(self, method: str, path: str, *, json_body: Any = None, params: dict | None = None) -> httpx.Response:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: Any = None,
+        params: dict | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
         url = path if path.startswith("http") else f"{self.api_url}{path}"
         for attempt in range(1, 5):
             try:
-                resp = self._client.request(method, url, json=json_body, params=params)
+                resp = self._client.request(method, url, json=json_body, params=params, headers=headers)
             except httpx.HTTPError as exc:
                 if attempt == 4:
                     raise GitHubError(f"{method} {path}: {exc}") from exc
@@ -121,6 +129,13 @@ class GitHub:
 
     def issue_comments(self, number: int, repo: str | None = None) -> list[dict[str, Any]]:
         return self._paginate(f"/repos/{repo or self.repo}/issues/{number}/comments")
+
+    def pull_diff(self, number: int, max_bytes: int = 2_000_000) -> str:
+        """A pull request's change as one unified diff."""
+        resp = self._request(
+            "GET", f"/repos/{self.repo}/pulls/{number}", headers={"Accept": "application/vnd.github.diff"}
+        )
+        return resp.content[:max_bytes].decode("utf-8", errors="replace")
 
     # ----------------------------------------------------------- issues
     def repo_labels(self) -> list[str]:

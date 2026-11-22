@@ -40,15 +40,17 @@ class Issue:
     url: str = ""
     is_pull_request: bool = False
     comments: list[tuple[str, str]] = field(default_factory=list)  # (author, text), people only
+    comment_dates: list[str] = field(default_factory=list)  # when each of them was written
 
     @classmethod
     def from_api(cls, d: dict[str, Any], comments: list[dict[str, Any]] | None = None) -> Issue:
-        people = []
+        people, dates = [], []
         for c in comments or []:
             user = c.get("user") or {}
             if user.get("type") == "Bot" or str(user.get("login") or "").endswith("[bot]"):
                 continue
             people.append((str(user.get("login") or ""), sanitize(c.get("body") or "")))
+            dates.append(str(c.get("created_at") or ""))
         return cls(
             number=int(d.get("number") or 0),
             title=sanitize(d.get("title") or ""),
@@ -61,6 +63,7 @@ class Issue:
             url=str(d.get("html_url") or ""),
             is_pull_request="pull_request" in d,
             comments=people,
+            comment_dates=dates,
         )
 
     @property

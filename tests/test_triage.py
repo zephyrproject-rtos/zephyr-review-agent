@@ -20,6 +20,7 @@ from zephyr_reviewer.mcp_server import build_server
 from zephyr_reviewer.review.github_api import GitHub
 from zephyr_reviewer.review.mcp_client import ToolBridge
 from zephyr_reviewer.triage.decide import commit_resolver, describe_culprit, propose
+from zephyr_reviewer.triage.fixes import LinkedPull, before_the_fixes, load_linked_pulls, parse_comparison
 from zephyr_reviewer.triage.issue import Issue, find_hints, split_sections
 from zephyr_reviewer.triage.pipeline import PR_ONLY_TOOLS, run_triage
 from zephyr_reviewer.triage.publish import apply, parse_actions, plan
@@ -367,7 +368,7 @@ def test_the_comment_says_what_was_found_and_mentions_nobody(tree):
     body = render_comment(ask, propose(ask, intel, _issue()), intel.head.sha, repo="o/r")
     assert "❓ **More information needed**" in body and "- Which board?" in body
     assert "Proposed triage" not in body and "Likely cause" not in body
-    assert "ran out of budget" in render_comment(
+    assert "the analysis was limited" in render_comment(
         _located(culprit, provisional=True, verdict="plausible"), p, intel.head.sha
     )
 
@@ -670,6 +671,8 @@ class _GitHubStub(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         what = self.path.rsplit("/", 1)[1]
+        if what == "graphql":  # the linked pull requests are asked for; this issue has none
+            return self._send(200, {"data": {"repository": {"issue": {}}}})
         _GitHubStub.writes.append((what, self.path, body))
         if what == "labels":
             return self._send(200, [{"name": n} for n in body["labels"]])
@@ -753,3 +756,207 @@ def test_ask_puts_every_change_to_the_caller_and_makes_only_those_confirmed(
     asked, writes, _ = run([], "--apply", "all")
     assert asked == [] and [w[0] for w in writes] == ["labels", "assignees", "comments"]
     assert writes[1][1] == {"assignees": ["alice"]}
+
+
+DIFF = """\
+diff --git a/drivers/i2c/i2c_foo.c b/drivers/i2c/i2c_foo.c
+--- a/drivers/i2c/i2c_foo.c
++++ b/drivers/i2c/i2c_foo.c
+@@ -15,7 +15,5 @@
+ \tret = foo_do_transfer(dev, msgs, num);
+-\tif (ret < 0) {
+-\t\treturn ret;
+-\t}
+ \tk_sem_give(&data->lock);
+"""
+
+
+def _pulls() -> list[LinkedPull]:
+    files = [("drivers/i2c/i2c_foo.c", 0, 3)]
+    return [
+        LinkedPull(
+            50, "i2c: foo: release the lock on error", "open", "2026-11-10T09:00:00Z", True, files=files, diff=DIFF
+        ),
+        LinkedPull(
+            51, "doc: mention #41", "merged", "2026-11-12T09:00:00Z", False, files=[("doc/x.rst", 1, 0)], diff="+x"
+        ),
+    ]
+
+
+def test_linked_pull_requests_are_found_sorted_and_read_with_their_diffs():
+    def pr(number, state, merged, created):
+        files = {"nodes": [{"path": "drivers/i2c/i2c_foo.c", "additions": 0, "deletions": 3}]}
+        return {
+            "number": number,
+            "title": f"<!-- x -->fix {number}",
+            "state": state,
+            "merged": merged,
+            "createdAt": created,
+            "files": files,
+        }
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/graphql"):
+            issue = {
+                "closedByPullRequestsReferences": {
+                    "nodes": [
+                        pr(50, "OPEN", False, "2026-11-10T09:00:00Z"),
+                        pr(49, "CLOSED", False, "2026-11-09T09:00:00Z"),
+                    ]
+                },
+                "timelineItems": {
+                    "nodes": [
+                        {"source": {"__typename": "PullRequest", **pr(51, "MERGED", True, "2026-11-12T09:00:00Z")}},
+                        {"source": {"__typename": "PullRequest", **pr(50, "OPEN", False, "2026-11-10T09:00:00Z")}},
+                        {"source": {"__typename": "Issue", "number": 7}},
+                        {"source": {"__typename": "PullRequest", **pr(52, "OPEN", False, "2026-11-13T09:00:00Z")}},
+                    ]
+                },
+            }
+            return httpx.Response(200, json={"data": {"repository": {"issue": issue}}})
+        seen.append(f"{request.url.path} {request.headers['accept']}")
+        if request.url.path.endswith("/52"):
+            return httpx.Response(404, json={})
+        return httpx.Response(200, text=DIFF * (40 if request.url.path.endswith("/51") else 1))
+
+    gh = GitHub("t", "o/r", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    logs: list[str] = []
+    pulls = load_linked_pulls(gh, 41, diff_chars=2000, log=logs.append)
+    # The one that closes the issue first; the abandoned one is no proposal; one whose diff cannot be read is left out.
+    assert [(p.number, p.state, p.closes) for p in pulls] == [(50, "open", True), (51, "merged", False)]
+    assert pulls[0].title == "fix 50" and pulls[0].files == [("drivers/i2c/i2c_foo.c", 0, 3)] and pulls[0].diff == DIFF
+    assert pulls[1].diff.endswith("... [diff clipped to 2000 characters]")
+    assert seen[0] == "/repos/o/r/pulls/50 application/vnd.github.diff" and "could not read the diff of #52" in logs[0]
+
+
+def test_what_was_written_once_a_fix_existed_is_kept_from_the_analysis():
+    comments = [
+        {"user": {"login": "bob"}, "body": "Seen here too.", "created_at": "2026-11-09T08:00:00Z"},
+        {
+            "user": {"login": "dev"},
+            "body": "The early return leaks the lock, see my PR.",
+            "created_at": "2026-11-10T10:00:00Z",
+        },
+    ]
+    issue = Issue.from_api({"number": 41, "title": "t", "body": BODY}, comments)
+    kept = before_the_fixes(issue, _pulls())
+    assert kept.comments == [("bob", "Seen here too.")] and len(issue.comments) == 2  # the issue itself is not changed
+    assert before_the_fixes(issue, []) is issue
+
+
+def test_every_pull_request_shown_gets_one_comparison_and_no_other():
+    pulls = _pulls()
+    good = {
+        "comparisons": [
+            {"number": 50, "relation": "same_fix", "assessment": "Removes the early return."},
+            {"number": 51, "relation": "UNRELATED", "assessment": "Docs only."},
+        ]
+    }
+    out, errs = parse_comparison(good, pulls)
+    assert errs == [] and [(c.number, c.relation, c.state, c.closes) for c in out] == [
+        (50, "same_fix", "open", True),
+        (51, "unrelated", "merged", False),
+    ]
+    assert (
+        "no comparison for pull request(s) 51"
+        in parse_comparison({"comparisons": good["comparisons"][:1]}, pulls)[1][0]
+    )
+    assert (
+        "must be one of 50, 51"
+        in parse_comparison({"comparisons": [{"number": 99, "relation": "same_fix", "assessment": "x"}]}, pulls)[1][0]
+    )
+    assert (
+        "relation must be one of"
+        in parse_comparison({"comparisons": [{"number": 50, "relation": "better", "assessment": "x"}]}, pulls)[1][0]
+    )
+
+
+class ComparingRouter(TriageRouter):
+    """A router whose comparison says the first pull request makes the fix found, and the second is unrelated."""
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "submit_comparison" in [t["function"]["name"] for t in body["tools"]]:
+            self.requests.append(body)
+            args = {
+                "comparisons": [
+                    {
+                        "number": 50,
+                        "relation": "same_fix",
+                        "assessment": "It removes the early return, so the lock is always released",
+                        "concerns": "foo_recover has the same pattern",
+                    },
+                    {"number": 51, "relation": "unrelated", "assessment": "Documentation only"},
+                ]
+            }
+            return httpx.Response(
+                200, json=_completion({"content": "", "tool_calls": [_tool_call("x", "submit_comparison", args)]})
+            )
+        return super().handler(request)
+
+
+async def test_proposed_fixes_are_compared_after_the_triage_and_never_shown_to_it(tree):
+    intel, culprit = tree
+    router = ComparingRouter(culprit)
+    run, _ = await _run(tree, router, pulls=_pulls())
+    assert run.triage.verdict == "confirmed" and [s["stage"] for s in run.stages][-1] == "compare"
+    assert [(c.number, c.relation) for c in run.comparisons] == [(50, "same_fix"), (51, "unrelated")]
+    by_tool = {
+        next(n for n in (t["function"]["name"] for t in r["tools"]) if n.startswith("submit_")): r
+        for r in router.requests
+    }
+    # The agents that look for the cause and decide see nothing of either pull request.
+    for tool in ("submit_causes", "submit_triage"):
+        text = json.dumps(by_tool[tool]["messages"])
+        assert "release the lock on error" not in text and "pull_request" not in text and "#50" not in text
+    # The comparing agent sees the finished triage and the diffs, as data, and has the tools to check them.
+    compare = by_tool["submit_comparison"]
+    opening = compare["messages"][1]["content"]
+    assert "## The independent analysis" in opening and "Verdict: confirmed, confidence high" in opening
+    assert "Cause: `drivers/i2c/i2c_foo.c:17`" in opening and "Fix it would make: Release the semaphore" in opening
+    assert "### Pull request #50 (open; declares that it closes this issue)" in opening
+    assert "### Pull request #51 (merged; refers to this issue)" in opening and "<pull_request>" in opening
+    assert (
+        "-\\tif (ret < 0) {" in json.dumps(opening)
+        and "compare proposed fixes with the analysis" in compare["messages"][0]["content"]
+    )
+    assert "read_file" in {t["function"]["name"] for t in compare["tools"]}
+    # The triage is the same with and without them.
+    alone, _ = await _run(tree, TriageRouter(culprit))
+    assert alone.triage.to_dict() == run.triage.to_dict() and alone.comparisons == []
+
+    describe_culprit(run.triage, intel)
+    body = render_comment(
+        run.triage, propose(run.triage, intel, _issue()), intel.head.sha, repo="o/r", comparisons=run.comparisons
+    )
+    assert "### Proposed fixes" in body and "was made without these pull requests" in body
+    assert (
+        "- #50 (open): **Same fix as found here.** It removes the early return, so the lock is always released. "
+        "Open: foo_recover has the same pattern." in body
+    )
+    assert "- #51 (merged): **Does not try to fix this issue.** Documentation only." in body
+    assert body.index("### Suggested fix") < body.index("### Proposed fixes") < body.index("### Proposed triage")
+
+
+async def test_a_comparison_that_fails_leaves_the_triage_standing(tree):
+    _, culprit = tree
+
+    class Failing(TriageRouter):
+        def handler(self, request):
+            body = json.loads(request.content)
+            if "submit_comparison" in [t["function"]["name"] for t in body["tools"]]:
+                return httpx.Response(400, json={"error": {"message": "Provider returned error", "code": 400}})
+            return super().handler(request)
+
+    run, _ = await _run(tree, Failing(culprit), pulls=_pulls())
+    assert run.triage.verdict == "confirmed" and run.comparisons == [] and "compare did not submit" in run.errors[-1]
+
+
+def test_nothing_posted_speaks_of_budgets():
+    from zephyr_reviewer.triage.decide import Proposal
+
+    late = Triage("plausible", "A likely cause.", "low", cause=Cause("", "kernel/sem.c", "x"), provisional=True)
+    body = render_comment(late, Proposal(), "a" * 40)
+    assert "the analysis was limited" in body and "budget" not in body.lower() and "cost" not in body.lower()
