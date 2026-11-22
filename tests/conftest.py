@@ -39,6 +39,8 @@ MAINTAINERS = """\
   status: maintained
   maintainers:
     - dave
+  files:
+    - AGENTS.md
   files-regex:
     - \\.rst$
   file-groups:
@@ -47,6 +49,7 @@ MAINTAINERS = """\
         - erin
       files:
         - AGENTS.md
+        - kernel/
 """
 
 I2C_H = """\

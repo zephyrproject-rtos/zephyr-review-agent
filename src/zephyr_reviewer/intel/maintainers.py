@@ -32,12 +32,19 @@ class Area:
     _groups: list[FileGroup] = field(default_factory=list)
 
     def matches(self, path: str) -> tuple[bool, list[FileGroup]]:
-        """(matched directly, matched file groups)."""
-        groups = [g for g in self._groups if g.matches(path)]
-        if self._exclude and self._exclude(path):
-            return False, groups
-        direct = bool(self._match and self._match(path))
-        return direct, groups
+        """(the area has the path, the file groups of the area that have it).
+
+        A file group divides its area further: a path is in a group only if it is in the area first, as
+        in get_maintainer.py. A group that lists ``dts/bindings/`` under a vendor's area has that
+        vendor's bindings, not everyone's."""
+        if not (self._match and self._match(path)) or (self._exclude and self._exclude(path)):
+            return False, []
+        return True, [g for g in self._groups if g.matches(path)]
+
+    @staticmethod
+    def deferring(groups: list[FileGroup]) -> bool:
+        """The path is in the area through file groups that all defer to other areas."""
+        return bool(groups) and all(g.defer for g in groups)
 
 
 @dataclass
@@ -112,15 +119,18 @@ class Maintainers:
             path += "/"
         out: list[tuple[Area, list[FileGroup]]] = []
         for area in self.areas:
-            direct, groups = area.matches(path)
-            if direct or groups:
+            inside, groups = area.matches(path)
+            if inside:
                 out.append((area, groups))
-        # Mirror get_maintainer: an area matched only via deferring file groups steps aside
-        # when another area matches directly.
-        direct_hit = any(d for d, _ in ((a.matches(path)[0], a) for a, _ in out))
-        if direct_hit:
-            out = [(a, g) for a, g in out if a.matches(path)[0] or not all(x.defer for x in g)]
         return out
+
+    def owners_for(self, path: str, *, is_dir: bool = False) -> list[tuple[Area, list[FileGroup]]]:
+        """The areas that have the path, the one to turn to first. As in get_maintainer: an area that
+        has the path through file groups which defer to other areas (a subsystem's vendor drivers) comes
+        after one that has it without deferring (the vendor's platform); it is still an area of the path,
+        and its labels still apply."""
+        found = self.areas_for(path, is_dir=is_dir)
+        return sorted(found, key=lambda ag: Area.deferring(ag[1]))
 
     def by_name(self, name: str) -> Area | None:
         for a in self.areas:

@@ -148,6 +148,8 @@ def test_maintainers_matching_follows_get_maintainer_rules(mini_repo):
     assert [a.name for a, _ in m.areas_for("doc/hardware/peripherals/i2c.rst")] == ["Documentation"]
     hits = m.areas_for("AGENTS.md")
     assert hits[0][0].name == "Documentation" and hits[0][1][0].name == "Agents"
+    # A file group divides its area: what it lists outside the area's own files is not in the area.
+    assert [a.name for a, _ in m.areas_for("kernel/sem.c")] == ["Kernel"]
     # A directory path matches a trailing-slash glob only when flagged as a directory.
     assert m.areas_for("drivers/i2c", is_dir=True)[0][0].name == "Drivers: I2C"
 
