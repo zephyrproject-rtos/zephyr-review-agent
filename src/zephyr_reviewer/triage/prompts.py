@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from importlib import resources
 
+from .fixes import LinkedPull
 from .issue import Hints, Issue
-from .schema import Cause
+from .schema import Cause, Triage
 
 
 def _profile(name: str) -> str:
@@ -82,4 +83,52 @@ def causes_section(causes: list[Cause], not_a_bug: list[str], missing: list[str]
         out += ["", "A first pass thinks this is not a defect in the tree:"] + [f"- {t}" for t in not_a_bug]
     if missing:
         out += ["", "A first pass found the report lacking:"] + [f"- {t}" for t in missing]
+    return "\n".join(out)
+
+
+def comparison_message(
+    issue: Issue, triage: Triage, pulls: list[LinkedPull], commit: str, *, body_chars: int = 6_000
+) -> str:
+    """The report, the independent analysis, and the pull requests to set against it."""
+    out = [
+        f"# Issue #{issue.number}: proposed fixes",
+        "",
+        f"Analysed against commit `{commit[:12]}`. The tools answer for that commit.",
+        "",
+        "<issue>",
+        f"Title: {issue.title}",
+        "",
+        _clip(issue.body, body_chars) or "(no description)",
+        "</issue>",
+        "",
+        "## The independent analysis",
+        "",
+        f"Verdict: {triage.verdict}, confidence {triage.confidence}"
+        + (" (submitted when its budget ran out)" if triage.provisional else ""),
+        "",
+        triage.summary,
+    ]
+    c = triage.cause
+    if triage.located and c is not None:
+        out += ["", f"Cause: `{c.file}:{c.line}`" if c.line else f"Cause: `{c.file}`", c.explanation]
+        if triage.fix:
+            out += ["", "Fix it would make: " + triage.fix]
+        if triage.patch:
+            out += ["", "```diff", triage.patch, "```"]
+    else:
+        out += ["", "It located no cause."]
+    out += ["", f"## Pull requests ({len(pulls)})"]
+    for p in pulls:
+        how = "declares that it closes this issue" if p.closes else "refers to this issue"
+        out += [
+            "",
+            f"### Pull request #{p.number} ({p.state}; {how})",
+            "",
+            "<pull_request>",
+            f"Title: {p.title}",
+            "Files: " + ", ".join(f"{path} (+{a} -{d})" for path, a, d in p.files[:30]),
+            "",
+            p.diff,
+            "</pull_request>",
+        ]
     return "\n".join(out)

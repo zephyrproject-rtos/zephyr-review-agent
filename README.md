@@ -647,11 +647,20 @@ How a run goes:
 3. **A verdict.** One model checks the candidates against the code and decides: `confirmed`,
    `plausible`, `not_a_bug`, `needs_info` or `cannot_confirm`. Nothing is built and nothing is
    run, so "confirmed" means confirmed by reading the code, and the comment says so. A verdict
-   submitted because the budget ran out confirms nothing: it is reported as plausible.
+   the model had to submit before it was done confirms nothing: it is reported as plausible, and
+   the comment says the analysis was limited. Nothing posted speaks of steps, budgets or cost.
 4. **The commit.** For a located cause the model traces the lines with `blame`, `search_history`
    and `show_commit`, tools only a triage run is given. It names a commit only when that commit's
    patch creates the defect, with a confidence.
 5. **The filing.** Labels, a priority with its reason, likely duplicates and a fix.
+
+6. **Proposed fixes.** Pull requests that close or refer to the issue are not input to any of
+   the above. Once the triage stands, a separate agent reads their diffs and sets each against it:
+   the same fix, the same cause fixed another way, something else than was found, or not a fix
+   for this issue, with what the pull request leaves open. Comments written on the issue after
+   the first such pull request was opened are kept from the analysis too, since they may say what
+   the fix is. The triage is not changed by the comparison, so agreement between the two is
+   evidence for both, and disagreement tells a maintainer where to look. `--no-linked-prs` skips it.
 
 What reaches the issue is derived or checked, not taken from the model. A cause must be in a file
 that exists at the commit, and a commit must be in the history, or the submission is sent back.

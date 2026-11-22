@@ -11,12 +11,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..review.agent import AgentResult, LocalTool, run_agent
+from ..review.agent import AgentResult, LocalTool, TerminalTool, run_agent
 from ..review.mcp_client import ToolBridge
 from ..review.openrouter import OpenRouter, Usage
 from ..review.render import normalize_title
+from .fixes import COMPARISON_TOOL, Comparison, LinkedPull, parse_comparison
 from .issue import Hints, Issue
-from .prompts import causes_section, opening_message, system_prompt
+from .prompts import causes_section, comparison_message, opening_message, system_prompt
 from .schema import Cause, Triage, causes_terminal, triage_terminal
 
 # Tools of the source intelligence that are about a pull request's change. An issue has no change.
@@ -35,6 +36,7 @@ class TriageRun:
     stages: list[dict[str, Any]] = field(default_factory=list)
     seconds: float = 0.0
     passes: dict[str, int] = field(default_factory=dict)
+    comparisons: list[Comparison] = field(default_factory=list)  # linked pull requests against the triage
 
 
 def _record(stage: str, res: AgentResult) -> dict[str, Any]:
@@ -82,14 +84,20 @@ async def run_triage(
     extra_tools: list[LocalTool] | None = None,
     language: str = "English",
     with_comments: bool = True,
+    pulls: list[LinkedPull] | None = None,
     locate_max_steps: int = 20,
     confirm_max_steps: int = 25,
+    compare_max_steps: int = 15,
     max_context_tokens: int = 160_000,
     max_seconds: float = 0,
     log=print,
     quiet: bool = False,
 ) -> TriageRun:
-    """``draft_llms`` may be empty: the deciding model then looks for the cause itself."""
+    """``draft_llms`` may be empty: the deciding model then looks for the cause itself.
+
+    ``pulls`` are pull requests that set out to fix the issue. Nothing of them reaches the agents that
+    look for the cause and decide: they are read afterwards, by an agent of their own, and set against
+    the triage as it then stands. The triage is not changed by what they say."""
     started = time.monotonic()
     bridge.tools = [t for t in bridge.tools if t["function"]["name"] not in PR_ONLY_TOOLS]
     run = TriageRun(None)
@@ -168,4 +176,28 @@ async def run_triage(
         match = next((c for c in run.causes if c.file == triage.cause.file), None)
         triage.cause.raised_by = list(match.raised_by) if match else []
     run.triage = triage
+    if pulls:
+        log(f"triage: comparing {len(pulls)} linked pull request(s) with the result")
+        res = await run_agent(
+            verify_llm,
+            bridge,
+            system_prompt("compare", language),
+            comparison_message(issue, triage, pulls, commit),
+            TerminalTool(
+                COMPARISON_TOOL,
+                lambda args: parse_comparison(args, pulls),
+                lambda out: f"{len(out)} pull request(s) compared",
+            ),
+            max_steps=compare_max_steps,
+            label="compare",
+            **common,
+        )
+        took("compare", res)
+        if res.output is None:
+            # The triage stands without it; the comment then says nothing about the pull requests.
+            run.errors.append(f"compare did not submit: {'; '.join(res.errors)}")
+            log(f"::warning::the linked pull requests were not compared: {'; '.join(res.errors) or 'no reason given'}")
+        else:
+            run.comparisons = res.output
+        run.seconds = time.monotonic() - started
     return run

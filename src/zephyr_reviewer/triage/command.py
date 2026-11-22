@@ -25,6 +25,7 @@ from ..review.github_api import GitHub, GitHubError, event_payload
 from ..review.mcp_client import ToolBridge, stdio_params
 from ..review.openrouter import OpenRouter
 from .decide import LABEL_PREFIXES, Proposal, commit_resolver, describe_culprit, propose
+from .fixes import LinkedPull, before_the_fixes, load_linked_pulls
 from .issue import Issue, find_hints
 from .pipeline import TriageRun, run_triage
 from .publish import ACTIONS, ASSIGN_TO, Plan, carry_out, parse_actions, plan
@@ -75,6 +76,11 @@ def add_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument("--any-kind", action="store_true", help="Triage the issue even if it is not a bug report")
     p.add_argument("--again", action="store_true", help="Triage an issue this tool already commented on")
+    p.add_argument(
+        "--no-linked-prs",
+        action="store_true",
+        help="Do not compare the pull requests that set out to fix the issue with the result",
+    )
     p.add_argument("--no-comments", action="store_true", help="Do not show the issue's comments to the models")
     p.add_argument("--output-dir", help="Where triage.json and comment.md are written (default: triage-output)")
     p.add_argument("--in-process-server", action="store_true", help="Run the source tools in this process")
@@ -138,7 +144,17 @@ def _search_tool(gh: GitHub, issue: Issue) -> LocalTool:
     return LocalTool(SEARCH_ISSUES_TOOL, handler)
 
 
-async def _run(cfg: ReviewConfig, own: dict, intel: SourceIntel, issue: Issue, gh: GitHub | None, labels, log, args):
+async def _run(
+    cfg: ReviewConfig,
+    own: dict,
+    intel: SourceIntel,
+    issue: Issue,
+    gh: GitHub | None,
+    labels,
+    log,
+    args,
+    pulls: list[LinkedPull] | None = None,
+):
     def llm(models: list[str]) -> OpenRouter:
         return OpenRouter(
             cfg.openrouter_api_key,
@@ -173,6 +189,7 @@ async def _run(cfg: ReviewConfig, own: dict, intel: SourceIntel, issue: Issue, g
             extra_tools=[_search_tool(gh, issue)] if gh is not None else None,
             language=cfg.language,
             with_comments=not args.no_comments,
+            pulls=pulls,
             locate_max_steps=own["locate_max_steps"],
             confirm_max_steps=own["confirm_max_steps"],
             max_context_tokens=cfg.max_context_tokens,
@@ -257,6 +274,7 @@ def save(out_dir: str, run: TriageRun, body: str, issue: Issue, commit: str, pro
         "proposal": asdict(proposal),
         "applied": applied,
         "causes": [asdict(c) for c in run.causes],
+        "linked_pulls": [asdict(c) for c in run.comparisons],
         "passes": run.passes,
         "errors": run.errors,
         "models": run.models_used,
@@ -415,10 +433,21 @@ def cmd_triage(args: argparse.Namespace) -> int:
         except GitHubError as exc:
             log(f"::warning::could not read the repository's labels, none will be proposed beyond MAINTAINERS: {exc}")
     shown = sorted(lab for lab in repo_labels or [] if lab.lower().startswith(LABEL_PREFIXES))
+    pulls: list[LinkedPull] = []
+    if gh is not None and issue.number and not args.no_linked_prs and _env("triage_linked_prs", "true") != "false":
+        pulls = load_linked_pulls(gh, issue.number, log=log)
+        if pulls:
+            # They are compared with the result afterwards. What was written on the issue once the first
+            # of them existed may say what the fix is, and is kept from the analysis for that reason.
+            issue = before_the_fixes(issue, pulls)
+            log(
+                f"{len(pulls)} linked pull request(s) will be compared with the result: "
+                + ", ".join(f"#{p.number}" for p in pulls)
+            )
     log(f"triaging #{issue.number} against {commit[:12]}: {issue.title[:80]}")
     tb = ""
     try:
-        run = run_async(_run(cfg, own, intel, issue, gh, shown, log, args))
+        run = run_async(_run(cfg, own, intel, issue, gh, shown, log, args, pulls))
     except Exception as exc:  # noqa: BLE001 - a failed run posts nothing; say why and keep the traceback
         tb = traceback.format_exc()
         run = TriageRun(None, errors=[describe_error(exc)])
@@ -443,11 +472,21 @@ def cmd_triage(args: argparse.Namespace) -> int:
     if gh is not None and actions:
         todo = plan(gh, issue, triage, proposal, actions, assign_to=own["assign_to"], attended=attended)
         if attended:
-            print("\n" + render_comment(triage, proposal, commit, repo=cfg.repo_slug, tag=own["tag"]), file=sys.stderr)
+            shown_first = render_comment(
+                triage, proposal, commit, repo=cfg.repo_slug, tag=own["tag"], comparisons=run.comparisons
+            )
+            print("\n" + shown_first, file=sys.stderr)
             todo = ask_plan(todo, issue)
         applied = carry_out(gh, issue, todo, log=log)
     body = render_comment(
-        triage, proposal, commit, repo=cfg.repo_slug, api_url=cfg.github_api_url, tag=own["tag"], applied=applied
+        triage,
+        proposal,
+        commit,
+        repo=cfg.repo_slug,
+        api_url=cfg.github_api_url,
+        tag=own["tag"],
+        applied=applied,
+        comparisons=run.comparisons,
     )
     d = save(own["output_dir"], run, body, issue, commit, proposal, applied)
     log(f"artifacts in {d}")
