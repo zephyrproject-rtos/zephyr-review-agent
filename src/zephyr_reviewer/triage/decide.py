@@ -23,8 +23,10 @@ class Proposal:
 
     labels: list[str] = field(default_factory=list)  # area and platform labels the issue does not have yet
     priority: str = ""  # the priority label, e.g. "priority: medium"
-    maintainers: list[str] = field(default_factory=list)  # of the area the defect is in
-    area: str = ""
+    maintainers: list[str] = field(default_factory=list)  # of the area to turn to first
+    area: str = ""  # that area
+    areas: list[str] = field(default_factory=list)  # every MAINTAINERS area that has the file, that one first
+    owners: list[tuple[str, str]] = field(default_factory=list)  # (first maintainer, area), one per area
     culprit_login: str = ""  # the account of the commit's author, when known
 
 
@@ -58,10 +60,26 @@ def _known(label: str, known: dict[str, str] | None) -> str:
     return known.get(label.lower(), "")
 
 
+def area_lines(intel: SourceIntel, paths: list[str], limit: int = 6) -> list[str]:
+    """What MAINTAINERS says about files: the areas each is in and the labels of those areas."""
+    m = intel.maintainers
+    out: list[str] = []
+    if m is None:
+        return out
+    for path in paths[:limit]:
+        found = m.owners_for(path, is_dir=intel.head.is_dir(path))
+        if found:
+            parts = [f"{a.name} ({', '.join(a.labels)})" if a.labels else a.name for a, _ in found]
+            out.append(f"- `{path}`: " + "; ".join(parts))
+    return out
+
+
 def propose(triage: Triage, intel: SourceIntel, issue: Issue, repo_labels: list[str] | None = None) -> Proposal:
-    """Labels come from MAINTAINERS for the file that has the defect; what the model adds counts only when
-    it is an area or platform label the repository has. Nothing is proposed for a report without a located
-    cause: where the defect is decides how it is filed."""
+    """How the issue is filed follows from MAINTAINERS for the file that has the defect: its areas, their
+    labels, and whom to turn to, in the order get_maintainer would. A label the model adds counts only if
+    MAINTAINERS defines it for some area; none is made up, and a label the repository does not have is
+    dropped. Nothing is proposed for a report without a located cause: where the defect is decides how
+    it is filed."""
     p = Proposal()
     if not triage.located:
         return p
@@ -69,12 +87,18 @@ def propose(triage: Triage, intel: SourceIntel, issue: Issue, repo_labels: list[
     have = {lab.lower() for lab in issue.labels}
     labels: list[str] = []
     m = intel.maintainers
+    defined: set[str] = set()
     if m is not None:
-        for area, _groups in m.areas_for(triage.cause.file):
+        defined = {lab.lower() for area in m.areas for lab in area.labels}
+        for area, _groups in m.owners_for(triage.cause.file):
             labels += area.labels
-            if not p.maintainers and area.maintainers:
-                p.maintainers, p.area = list(area.maintainers), area.name
-    labels += [lab for lab in triage.labels if lab.lower().startswith(LABEL_PREFIXES) and known is not None]
+            p.areas.append(area.name)
+            if area.maintainers:
+                if not p.maintainers:
+                    p.maintainers, p.area = list(area.maintainers), area.name
+                if area.maintainers[0] not in [who for who, _ in p.owners]:
+                    p.owners.append((area.maintainers[0], area.name))
+    labels += [lab for lab in triage.labels if lab.lower() in defined]
     if triage.regression and triage.culprit is not None:
         labels.append(REGRESSION_LABEL)
     for lab in labels:

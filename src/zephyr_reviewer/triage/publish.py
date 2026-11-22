@@ -83,12 +83,11 @@ def plan(
         else:
             k = triage.culprit
             author = proposal.culprit_login if k is not None else ""
-            maintainer = proposal.maintainers[0] if proposal.maintainers else ""
             first_author = assign_to == "author" and k is not None and k.confidence == "high"
-            candidates = []
-            if maintainer:
-                candidates.append((maintainer, f"maintainer of {proposal.area}" if proposal.area else "maintainer"))
-            if author and author != maintainer and (attended or first_author):
+            # The maintainer of each area that has the file, the one to turn to first at the head.
+            owners = proposal.owners or [(w, proposal.area) for w in proposal.maintainers[:1]]
+            candidates = [(who, f"maintainer of {area}" if area else "maintainer") for who, area in owners[:3]]
+            if author and author not in [c[0] for c in candidates] and (attended or first_author):
                 candidates.append((author, f"author of {k.commit[:12]}"))
             if first_author and author:
                 candidates.sort(key=lambda c: c[0] != author)

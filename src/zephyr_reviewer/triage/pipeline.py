@@ -80,7 +80,7 @@ async def run_triage(
     exists: Callable[[str], bool],
     resolve: Callable[[str], str | None],
     repo: str = "",
-    labels: list[str] | None = None,
+    areas: list[str] | None = None,
     extra_tools: list[LocalTool] | None = None,
     language: str = "English",
     with_comments: bool = True,
@@ -101,7 +101,7 @@ async def run_triage(
     started = time.monotonic()
     bridge.tools = [t for t in bridge.tools if t["function"]["name"] not in PR_ONLY_TOOLS]
     run = TriageRun(None)
-    opening = opening_message(issue, hints, commit, repo=repo, labels=labels, with_comments=with_comments)
+    opening = opening_message(issue, hints, commit, repo=repo, areas=areas, with_comments=with_comments)
     common = dict(
         max_context_tokens=max_context_tokens, max_seconds=max_seconds, extra_tools=extra_tools, log=log, quiet=quiet
     )

@@ -128,7 +128,9 @@ def _filing(triage: Triage, p: Proposal, applied: dict[str, list[str]]) -> list[
     assigned = applied.get("assignees") or []
     if assigned:
         out.append("- Assigned: " + ", ".join(f"`{a}`" for a in assigned))
-    elif p.maintainers:
+    if p.areas:
+        out.insert(0, "- Area: " + ", ".join(p.areas))
+    if not assigned and p.maintainers:
         who = ", ".join(f"`{m}`" for m in p.maintainers)
         out.append(f"- Maintained by {who}" + (f" ({p.area})" if p.area else ""))
     return out

@@ -31,7 +31,7 @@ def opening_message(
     commit: str,
     *,
     repo: str = "",
-    labels: list[str] | None = None,
+    areas: list[str] | None = None,
     body_chars: int = 16_000,
     comment_chars: int = 1_500,
     max_comments: int = 5,
@@ -62,8 +62,8 @@ def opening_message(
         for who, text in issue.comments[:max_comments]:
             out += [f"[{who}]", _clip(text, comment_chars), ""]
         out += ["</issue_comments>"]
-    if labels:
-        out += ["", "## Labels this repository has for areas and platforms", "", ", ".join(labels)]
+    if areas:
+        out += ["", "## What MAINTAINERS says about the files named", "", *areas]
     return "\n".join(out)
 
 

@@ -19,7 +19,7 @@ from zephyr_reviewer.intel import SourceIntel
 from zephyr_reviewer.mcp_server import build_server
 from zephyr_reviewer.review.github_api import GitHub
 from zephyr_reviewer.review.mcp_client import ToolBridge
-from zephyr_reviewer.triage.decide import commit_resolver, describe_culprit, propose
+from zephyr_reviewer.triage.decide import area_lines, commit_resolver, describe_culprit, propose
 from zephyr_reviewer.triage.fixes import LinkedPull, before_the_fixes, load_linked_pulls, parse_comparison
 from zephyr_reviewer.triage.issue import Issue, find_hints, split_sections
 from zephyr_reviewer.triage.pipeline import PR_ONLY_TOOLS, run_triage
@@ -236,18 +236,19 @@ async def _run(tree, router: TriageRouter, drafters=("cheap/a", "cheap/b"), **kw
         llm._client = httpx.Client(transport=httpx.MockTransport(router.handler))
         llms.append(llm)
     issue = _issue()
+    hints = find_hints(issue, intel.head)
     async with ToolBridge(build_server(intel, history=True)) as bridge:
         run = await run_triage(
             llms[:-1],
             llms[-1],
             bridge,
             issue,
-            find_hints(issue, intel.head),
+            hints,
             intel.head.sha,
             exists=intel.head.exists,
             resolve=commit_resolver(intel),
             repo="o/r",
-            labels=["area: I2C", "area: Kernel"],
+            areas=area_lines(intel, hints.paths),
             log=lambda m: None,
             **kw,
         )
@@ -286,11 +287,12 @@ async def test_a_run_locates_decides_and_traces_the_commit(tree):
         "drivers: i2c: foo: add bus recovery",
     )
     p = propose(t, intel, issue, ["area: I2C", "area: Kernel", "Regression", "priority: high", "bug"])
-    assert p.labels == [
-        "area: I2C",
-        "area: Kernel",
-        "Regression",
-    ]  # an invented label and a priority are not area labels
+    # MAINTAINERS decides: the labels of the file's areas, and of what the model adds only those some area
+    # defines. "area: Kernel" exists in the repository, but no area of MAINTAINERS carries it.
+    assert p.labels == ["area: I2C", "Regression"] and p.areas == ["Drivers: I2C"]
+    assert p.owners == [("alice", "Drivers: I2C")]
+    assert "## What MAINTAINERS says about the files named" in opening
+    assert "- `drivers/i2c/i2c_foo.c`: Drivers: I2C (area: I2C)" in opening
     assert p.priority == "priority: high" and p.maintainers == ["alice"] and p.area == "Drivers: I2C"
     # Offline the repository's labels are not known: only what MAINTAINERS says is proposed.
     assert propose(t, intel, issue, None).labels == ["area: I2C", "Regression"]
@@ -960,3 +962,72 @@ def test_nothing_posted_speaks_of_budgets():
     late = Triage("plausible", "A likely cause.", "low", cause=Cause("", "kernel/sem.c", "x"), provisional=True)
     body = render_comment(late, Proposal(), "a" * 40)
     assert "the analysis was limited" in body and "budget" not in body.lower() and "cost" not in body.lower()
+
+
+VENDOR_MAINTAINERS = """\
+"Vnd Platforms":
+  status: maintained
+  maintainers: [vera]
+  files: [drivers/*/*_vnd*, boards/vnd/]
+  file-groups:
+    - name: Vnd docs
+      files: [doc/]
+  labels: ["platform: Vnd"]
+"Drivers: I2C":
+  status: maintained
+  maintainers: [alice]
+  files: [drivers/i2c/]
+  file-groups:
+    - name: I2C driver
+      defer-to-other-areas: true
+      files: ["drivers/i2c/i2c_*.c"]
+  labels: ["area: I2C"]
+"Documentation":
+  status: odd fixes
+  files: [doc/]
+  labels: ["area: Documentation"]
+"""
+
+
+def test_areas_labels_and_whom_to_turn_to_follow_the_maintainers_file(tree):
+    from zephyr_reviewer.intel.maintainers import Maintainers
+    from zephyr_reviewer.triage.decide import Proposal
+
+    m = Maintainers(VENDOR_MAINTAINERS)
+    # A vendor's driver in a subsystem: both areas have it, and the subsystem defers to the platform.
+    assert [a.name for a, _ in m.areas_for("drivers/i2c/i2c_vnd.c")] == ["Vnd Platforms", "Drivers: I2C"]
+    assert [a.name for a, _ in m.owners_for("drivers/i2c/i2c_vnd.c")] == ["Vnd Platforms", "Drivers: I2C"]
+    # The subsystem's own driver is the subsystem's alone, deferring or not.
+    assert [a.name for a, _ in m.owners_for("drivers/i2c/i2c_common.c")] == ["Drivers: I2C"]
+    # A file group reaches no further than its area: the vendor's group on doc/ is not everyone's documentation.
+    assert [a.name for a, _ in m.owners_for("doc/index.rst")] == ["Documentation"]
+
+    intel, culprit = tree
+    intel.__dict__["maintainers"] = m  # the mini tree's driver, filed by this MAINTAINERS
+    try:
+        _git(intel.head.root, "cat-file", "-e", f"{intel.head.sha}:drivers/i2c/i2c_foo.c")
+        t = _located(culprit, labels=["platform: Vnd", "area: Documentation", "area: Made Up"])
+        p = propose(t, intel, _issue(), None)
+        # The file's own area, then what the model named, as far as MAINTAINERS defines it.
+        assert p.areas == ["Drivers: I2C"] and p.labels == [
+            "area: I2C",
+            "platform: Vnd",
+            "area: Documentation",
+            "Regression",
+        ]
+        assert p.owners == [("alice", "Drivers: I2C")]
+        assert area_lines(intel, ["drivers/i2c/i2c_foo.c", "nope.c"]) == [
+            "- `drivers/i2c/i2c_foo.c`: Drivers: I2C (area: I2C)"
+        ]
+    finally:
+        del intel.__dict__["maintainers"]
+    # With two areas the one to turn to first is assigned, and a person who is asked gets both to choose from.
+    two = Proposal(maintainers=["vera"], area="Vnd Platforms", areas=["Vnd Platforms", "Drivers: I2C"])
+    two.owners = [("vera", "Vnd Platforms"), ("alice", "Drivers: I2C")]
+    gh = _gh([], assignable=("vera", "alice"))
+    actions = parse_actions("assign")[0]
+    assert plan(gh, _issue(), _located(culprit), two, actions).assignees == [("vera", "maintainer of Vnd Platforms")]
+    asked = plan(gh, _issue(), _located(culprit), two, actions, attended=True).assignees
+    assert asked == [("vera", "maintainer of Vnd Platforms"), ("alice", "maintainer of Drivers: I2C")]
+    body = render_comment(_located(culprit), two, "a" * 40)
+    assert "- Area: Vnd Platforms, Drivers: I2C" in body and "- Maintained by `vera` (Vnd Platforms)" in body
