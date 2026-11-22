@@ -27,6 +27,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "zephyr_reviewer.review" = ["profiles/*.md", "profiles/stages/*.md"]
+"zephyr_reviewer.triage" = ["profiles/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
