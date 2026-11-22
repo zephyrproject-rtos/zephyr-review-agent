@@ -65,6 +65,7 @@ from .review.render import (
     run_progress,
 )
 from .review.stages import run_two_stage
+from .triage import command as triage_command
 
 
 def log(msg: str) -> None:
@@ -1177,6 +1178,10 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("review", help="Review a pull request (or a local range) and publish the result")
     _add_review_args(r)
     r.set_defaults(fn=cmd_review)
+
+    g = sub.add_parser("triage", help="Analyse a reported issue against the tree and propose how to file it")
+    triage_command.add_args(g)
+    g.set_defaults(fn=triage_command.cmd_triage)
 
     o = sub.add_parser("post", help="Publish a review saved by an earlier run (after reading or editing comment.md)")
     o.add_argument("--output-dir", default="review-output", help="Directory holding review.json and comment.md")

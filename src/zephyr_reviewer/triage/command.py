@@ -1,0 +1,304 @@
+# Copyright (c) 2026 Anas Nashif
+# SPDX-License-Identifier: Apache-2.0
+
+"""The ``triage`` command: read an issue, analyse it against the tree, and file what the run supports."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import traceback
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any
+
+from .. import mcp_server
+from ..intel import SourceIntel
+from ..review import publish as pub
+from ..review.agent import LocalTool
+from ..review.config import ReviewConfig, _env
+from ..review.discussion import sanitize
+from ..review.github_api import GitHub, GitHubError, event_payload
+from ..review.mcp_client import ToolBridge, stdio_params
+from ..review.openrouter import OpenRouter
+from .decide import LABEL_PREFIXES, Proposal, commit_resolver, describe_culprit, propose
+from .issue import Issue, find_hints
+from .pipeline import TriageRun, run_triage
+from .publish import ASSIGN_TO, apply, parse_actions
+from .render import TAG, marker, render_comment
+
+SEARCH_ISSUES_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_issues",
+        "description": "Search this repository's issues, open and closed, for reports of the same defect. "
+        "Give a few distinctive words: a function, an error message, a board. Returns number, state and title.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Search words"}},
+            "required": ["query"],
+        },
+    },
+}
+
+
+def add_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--repo", dest="repo_root", help="Path to the Zephyr checkout (default: cwd)")
+    p.add_argument("--repository", help="GitHub owner/name (default: $GITHUB_REPOSITORY)")
+    p.add_argument("--issue", type=int, help="Issue number (default: from the event that started the workflow)")
+    p.add_argument("--issue-file", help="Read the issue from a JSON file as the GitHub API returns it")
+    p.add_argument("--head", help="Commit to analyse against (default: HEAD)")
+    p.add_argument("--model", help="Model that decides (default: as for a review)")
+    p.add_argument("--draft-ensemble", help="Comma-separated models that look for candidate causes first")
+    p.add_argument("--provider", help="OpenRouter provider preferences as JSON")
+    p.add_argument("--api-key", help="OpenRouter API key (default: $OPENROUTER_API_KEY)")
+    p.add_argument("--github-token", help="GitHub token (default: $GITHUB_TOKEN)")
+    p.add_argument(
+        "--apply",
+        help="What the run may do to the issue, comma-separated: comment, labels, priority, assign; all; "
+        "none (default: none, which prints the comment and changes nothing)",
+    )
+    p.add_argument(
+        "--assign-to",
+        choices=ASSIGN_TO,
+        help="With assign: the area's maintainer (default), or the author of the introducing commit when "
+        "that commit is named with high confidence",
+    )
+    p.add_argument("--any-kind", action="store_true", help="Triage the issue even if it is not a bug report")
+    p.add_argument("--again", action="store_true", help="Triage an issue this tool already commented on")
+    p.add_argument("--no-comments", action="store_true", help="Do not show the issue's comments to the models")
+    p.add_argument("--output-dir", help="Where triage.json and comment.md are written (default: triage-output)")
+    p.add_argument("--in-process-server", action="store_true", help="Run the source tools in this process")
+    p.add_argument("-q", "--quiet", action="store_true", help="Log the major steps only")
+    p.add_argument("--show-details", action="store_true", help="Log models, tokens and cost of the run")
+
+
+def _settings(args: argparse.Namespace) -> tuple[ReviewConfig, dict[str, Any]]:
+    """The model, key and budget settings a review uses, and what is the triage's own."""
+    cfg = ReviewConfig.from_env()
+    for attr, key in (("repo_root", "repo_root"), ("repository", "repo_slug"), ("api_key", "openrouter_api_key")):
+        if getattr(args, attr, None) is not None:
+            setattr(cfg, key, getattr(args, attr))
+    if args.github_token is not None:
+        cfg.github_token = args.github_token
+    if args.model:
+        cfg.models = [args.model] + [m for m in cfg.models[1:] if m != args.model]
+    if args.draft_ensemble is not None:
+        cfg.draft_ensemble = [m.strip() for m in args.draft_ensemble.split(",") if m.strip()]
+    if args.provider:
+        cfg.provider = json.loads(args.provider)
+    cfg.quiet = cfg.quiet or args.quiet
+    cfg.in_process_server = cfg.in_process_server or args.in_process_server
+    own = {
+        "issue": args.issue or (int(_env("issue_number")) if _env("issue_number").strip().isdigit() else None),
+        "head": args.head or _env("triage_head", "HEAD"),
+        "actions": args.apply if args.apply is not None else _env("triage_apply", "none"),
+        "assign_to": args.assign_to or _env("triage_assign_to", "maintainer"),
+        "output_dir": args.output_dir or _env("triage_output_dir", "triage-output"),
+        "tag": _env("triage_tag", TAG),
+        "locate_max_steps": int(_env("triage_locate_max_steps", "20")),
+        "confirm_max_steps": int(_env("triage_confirm_max_steps", "25")),
+    }
+    return cfg, own
+
+
+def _load_issue(args: argparse.Namespace, gh: GitHub | None, number: int | None) -> Issue | None:
+    if args.issue_file:
+        data = json.loads(Path(args.issue_file).read_text(encoding="utf-8"))
+        return Issue.from_api(data, data.get("comment_list") or [])
+    if gh is None or number is None:
+        return None
+    return Issue.from_api(gh.issue(number), [] if args.no_comments else gh.issue_comments(number))
+
+
+def _search_tool(gh: GitHub, issue: Issue) -> LocalTool:
+    async def handler(arguments: dict[str, Any]) -> str:
+        query = " ".join(str(arguments.get("query") or "").split())[:200]
+        if not query:
+            return "ERROR: give a query"
+        try:
+            items = [i for i in gh.search_issues(query, 10) if int(i.get("number") or 0) != issue.number]
+        except GitHubError as exc:
+            return f"ERROR: the search failed: {str(exc)[:200]}"
+        if not items:
+            return "No other issue matches."
+        return "\n".join(f"#{i.get('number')} [{i.get('state')}] {sanitize(i.get('title') or '')[:160]}" for i in items)
+
+    return LocalTool(SEARCH_ISSUES_TOOL, handler)
+
+
+async def _run(cfg: ReviewConfig, own: dict, intel: SourceIntel, issue: Issue, gh: GitHub | None, labels, log, args):
+    def llm(models: list[str]) -> OpenRouter:
+        return OpenRouter(
+            cfg.openrouter_api_key,
+            models,
+            base_url=cfg.base_url,
+            temperature=cfg.temperature,
+            max_tokens=cfg.max_tokens,
+            provider=cfg.provider,
+            timeout=cfg.model_timeout_seconds,
+            on_event=log,
+        )
+
+    drafters = cfg.draft_models[:1] + [m for m in cfg.draft_ensemble if m not in cfg.draft_models[:1]]
+    if cfg.in_process_server:
+        target = mcp_server.build_server(intel, history=True)
+    else:
+        target = stdio_params(cfg.repo_root, intel.head.sha, intel.head.sha, cfg.max_tool_result_chars, history=True)
+    async with ToolBridge(
+        target, max_result_chars=cfg.max_tool_result_chars, call_timeout=float(cfg.tool_timeout_seconds)
+    ) as bridge:
+        return await run_triage(
+            [llm([m]) for m in drafters],
+            llm(cfg.models),
+            bridge,
+            issue,
+            find_hints(issue, intel.head),
+            intel.head.sha,
+            exists=intel.head.exists,
+            resolve=commit_resolver(intel),
+            repo=cfg.repo_slug,
+            labels=labels,
+            extra_tools=[_search_tool(gh, issue)] if gh is not None else None,
+            language=cfg.language,
+            with_comments=not args.no_comments,
+            locate_max_steps=own["locate_max_steps"],
+            confirm_max_steps=own["confirm_max_steps"],
+            max_context_tokens=cfg.max_context_tokens,
+            max_seconds=cfg.max_stage_seconds,
+            log=log,
+            quiet=cfg.quiet,
+        )
+
+
+def save(out_dir: str, run: TriageRun, body: str, issue: Issue, commit: str, proposal: Proposal, applied) -> Path:
+    d = Path(out_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "comment.md").write_text(body, encoding="utf-8")
+    record = {
+        "issue": issue.number,
+        "commit": commit,
+        "triage": run.triage.to_dict() if run.triage else None,
+        "proposal": asdict(proposal),
+        "applied": applied,
+        "causes": [asdict(c) for c in run.causes],
+        "passes": run.passes,
+        "errors": run.errors,
+        "models": run.models_used,
+        "seconds": round(run.seconds, 1),
+        "usage": run.usage.as_dict(),
+        "stages": run.stages,
+    }
+    (d / "triage.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    with (d / "transcript.jsonl").open("w", encoding="utf-8") as fh:
+        for t in run.transcript:
+            fh.write(json.dumps(t) + "\n")
+    return d
+
+
+def cmd_triage(args: argparse.Namespace) -> int:
+    from ..cli import describe_error, log, run_async  # the command line's own helpers; imported late, it imports us
+
+    cfg, own = _settings(args)
+    actions, errors = parse_actions(own["actions"])
+    if own["assign_to"] not in ASSIGN_TO:
+        errors.append(f"assign-to must be one of {', '.join(ASSIGN_TO)}")
+    if not cfg.openrouter_api_key:
+        errors.append("an OpenRouter API key is required (--api-key or OPENROUTER_API_KEY)")
+    if actions and (not cfg.github_token or not cfg.repo_slug):
+        errors.append("--apply needs a GitHub token and --repository")
+    for e in errors:
+        log(f"::error::{e}")
+    if errors:
+        return 2
+
+    def skipped(reason: str) -> int:
+        log(f"skipping triage: {reason}")
+        pub.write_outputs({"skipped": "true", "verdict": "skipped"})
+        return 0
+
+    gh = GitHub(cfg.github_token, cfg.repo_slug, cfg.github_api_url) if cfg.github_token and cfg.repo_slug else None
+    number = own["issue"] or int((event_payload().get("issue") or {}).get("number") or 0) or None
+    try:
+        issue = _load_issue(args, gh, number)
+    except (GitHubError, OSError, ValueError) as exc:
+        log(f"::error::could not read the issue: {exc}")
+        return 2
+    if issue is None:
+        log("::error::no issue to triage: give --issue with a token and --repository, or --issue-file")
+        return 2
+    if issue.is_pull_request:
+        return skipped(f"#{issue.number} is a pull request")
+    if issue.state != "open" and not args.again:
+        return skipped(f"#{issue.number} is {issue.state}")
+    if not issue.is_bug_report() and not args.any_kind:
+        return skipped(f"#{issue.number} is not a bug report")
+    if gh is not None and not args.again and gh.find_comment(issue.number, marker(own["tag"])):
+        return skipped(f"#{issue.number} was triaged before")
+
+    intel = SourceIntel(cfg.repo_root, own["head"], own["head"], max_chars=cfg.max_tool_result_chars)
+    commit = intel.head.sha
+    repo_labels = None
+    if gh is not None:
+        try:
+            repo_labels = gh.repo_labels()
+        except GitHubError as exc:
+            log(f"::warning::could not read the repository's labels, none will be proposed beyond MAINTAINERS: {exc}")
+    shown = sorted(lab for lab in repo_labels or [] if lab.lower().startswith(LABEL_PREFIXES))
+    log(f"triaging #{issue.number} against {commit[:12]}: {issue.title[:80]}")
+    tb = ""
+    try:
+        run = run_async(_run(cfg, own, intel, issue, gh, shown, log, args))
+    except Exception as exc:  # noqa: BLE001 - a failed run posts nothing; say why and keep the traceback
+        tb = traceback.format_exc()
+        run = TriageRun(None, errors=[describe_error(exc)])
+    if run.triage is None:
+        log("::error::" + "; ".join(run.errors or ["the triage did not complete"]))
+        d = save(own["output_dir"], run, "", issue, commit, Proposal(), {})
+        if tb:
+            (d / "traceback.txt").write_text(tb, encoding="utf-8")
+        return 1
+
+    triage = run.triage
+    describe_culprit(triage, intel)
+    proposal = propose(triage, intel, issue, repo_labels)
+    if gh is not None and triage.culprit is not None:
+        triage.culprit.login = proposal.culprit_login = gh.commit_author_login(triage.culprit.commit)
+    applied: dict[str, list[str]] = {}
+    if gh is not None and actions:
+        applied = apply(gh, issue, triage, proposal, actions, assign_to=own["assign_to"], log=log)
+    body = render_comment(
+        triage, proposal, commit, repo=cfg.repo_slug, api_url=cfg.github_api_url, tag=own["tag"], applied=applied
+    )
+    d = save(own["output_dir"], run, body, issue, commit, proposal, applied)
+    log(f"artifacts in {d}")
+    url = ""
+    if gh is not None and "comment" in actions:
+        url = gh.upsert_comment(issue.number, body, marker(own["tag"]))
+        log(f"posted {url}")
+    else:
+        print(body)
+    pub.write_summary(body)
+    pub.write_outputs(
+        {
+            "skipped": "false",
+            "verdict": triage.verdict,
+            "confidence": triage.confidence,
+            "culprit": triage.culprit.commit if triage.culprit else "",
+            "labels": ",".join(applied.get("labels") or []),
+            "comment_url": url,
+        }
+    )
+    u = run.usage
+    if args.show_details or cfg.show_run_details:
+        log(
+            f"models: {', '.join(run.models_used)}; {u.requests} requests, {u.prompt_tokens:,} prompt and "
+            f"{u.completion_tokens:,} completion tokens, ${u.cost:.4f}, {run.seconds:.0f}s"
+        )
+    else:
+        log(f"triage of #{issue.number}: {triage.verdict}, {run.seconds:.0f}s")
+    if os.environ.get("GITHUB_ACTIONS") and run.errors:
+        for e in run.errors:
+            log(f"::warning::{e}")
+    return 0
