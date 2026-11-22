@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from ..review.github_api import GitHub, GitHubError
 from .decide import Proposal
@@ -29,6 +30,99 @@ def parse_actions(value: str) -> tuple[list[str], list[str]]:
     ]
 
 
+@dataclass
+class Plan:
+    """What a run would change on the issue, before it does."""
+
+    labels: list[str] = field(default_factory=list)
+    priority: str = ""
+    assignees: list[tuple[str, str]] = field(default_factory=list)  # (login, why), the first is the default
+    withheld: list[str] = field(default_factory=list)  # what is not offered, and why
+
+    @property
+    def empty(self) -> bool:
+        return not (self.labels or self.priority or self.assignees)
+
+
+def plan(
+    gh: GitHub,
+    issue: Issue,
+    triage: Triage,
+    proposal: Proposal,
+    actions: list[str],
+    *,
+    assign_to: str = "maintainer",
+    attended: bool = False,
+) -> Plan:
+    """The changes ``actions`` allow and the triage supports.
+
+    Labels need a located cause. Unattended, a priority and an assignee need a confirmed one: a guess
+    about where the defect is can be filed under its area, and should not rank the issue or hand it to
+    someone. The author of the introducing commit is a candidate only when GitHub would accept them, and
+    the default only when asked for and the commit is named with high confidence; otherwise the area's
+    maintainer is. An issue that already has an assignee keeps it.
+
+    ``attended`` is a run where a person confirms each change: a likely cause is then enough to offer a
+    priority and an assignee, and the author is offered beside the maintainer, since the person decides."""
+    out = Plan()
+    if not triage.located:
+        return out
+    confirmed = triage.verdict == "confirmed" and not triage.provisional
+    if "labels" in actions:
+        out.labels = list(proposal.labels)
+    if "priority" in actions and proposal.priority:
+        if confirmed or attended:
+            out.priority = proposal.priority
+        else:
+            out.withheld.append("no priority is set on a cause that is not confirmed")
+    if "assign" in actions:
+        if issue.assignees:
+            out.withheld.append(f"already assigned to {', '.join(issue.assignees)}")
+        elif not (confirmed or attended):
+            out.withheld.append("nobody is assigned on a cause that is not confirmed")
+        else:
+            k = triage.culprit
+            author = proposal.culprit_login if k is not None else ""
+            maintainer = proposal.maintainers[0] if proposal.maintainers else ""
+            first_author = assign_to == "author" and k is not None and k.confidence == "high"
+            candidates = []
+            if maintainer:
+                candidates.append((maintainer, f"maintainer of {proposal.area}" if proposal.area else "maintainer"))
+            if author and author != maintainer and (attended or first_author):
+                candidates.append((author, f"author of {k.commit[:12]}"))
+            if first_author and author:
+                candidates.sort(key=lambda c: c[0] != author)
+            out.assignees = [c for c in candidates if gh.assignable(c[0])]
+            if candidates and not out.assignees:
+                out.withheld.append("GitHub accepts none of the candidates as an assignee")
+            if not attended:
+                out.assignees = out.assignees[:1]
+    return out
+
+
+def carry_out(gh: GitHub, issue: Issue, p: Plan, *, log: Callable[[str], None] = print) -> dict[str, list[str]]:
+    """Apply a plan; returns what was done. A failure is logged, not raised: the comment is still worth
+    posting. Of several candidate assignees only the first is assigned."""
+    done: dict[str, list[str]] = {"labels": [], "assignees": []}
+    labels = [*p.labels, *([p.priority] if p.priority else [])]
+    if labels:
+        try:
+            gh.add_labels(issue.number, labels)
+            done["labels"] = labels
+            log(f"triage: added label(s) {', '.join(labels)}")
+        except GitHubError as exc:
+            log(f"::warning::could not add labels: {exc}")
+    who = [login for login, _ in p.assignees[:1]]
+    if who:
+        try:
+            gh.add_assignees(issue.number, who)
+            done["assignees"] = who
+            log(f"triage: assigned {', '.join(who)}")
+        except GitHubError as exc:
+            log(f"::warning::could not assign: {exc}")
+    return done
+
+
 def apply(
     gh: GitHub,
     issue: Issue,
@@ -39,39 +133,5 @@ def apply(
     assign_to: str = "maintainer",
     log: Callable[[str], None] = print,
 ) -> dict[str, list[str]]:
-    """Label and assign as far as ``actions`` allow and the triage supports; returns what was done.
-
-    Labels need a located cause. A priority and an assignee need a confirmed one: a guess about where the
-    defect is can be filed under its area, and should not rank the issue or hand it to someone. The
-    author of the introducing commit is assigned only when that commit is named with high confidence and
-    GitHub would accept them; otherwise, and by default, the area's maintainer. An issue that already has
-    an assignee keeps it. A failure here is logged, not raised: the comment is still worth posting."""
-    done: dict[str, list[str]] = {"labels": [], "assignees": []}
-    if not triage.located:
-        return done
-    confirmed = triage.verdict == "confirmed" and not triage.provisional
-    labels = list(proposal.labels) if "labels" in actions else []
-    if "priority" in actions and confirmed and proposal.priority:
-        labels.append(proposal.priority)
-    if labels:
-        try:
-            gh.add_labels(issue.number, labels)
-            done["labels"] = labels
-            log(f"triage: added label(s) {', '.join(labels)}")
-        except GitHubError as exc:
-            log(f"::warning::could not add labels: {exc}")
-    if "assign" in actions and confirmed and not issue.assignees:
-        who: list[str] = []
-        k = triage.culprit
-        if assign_to == "author" and k is not None and k.confidence == "high" and proposal.culprit_login:
-            who = [proposal.culprit_login]
-        who = who or proposal.maintainers[:1]
-        who = [w for w in who if gh.assignable(w)]
-        if who:
-            try:
-                gh.add_assignees(issue.number, who)
-                done["assignees"] = who
-                log(f"triage: assigned {', '.join(who)}")
-            except GitHubError as exc:
-                log(f"::warning::could not assign: {exc}")
-    return done
+    """Plan and carry out without asking anyone."""
+    return carry_out(gh, issue, plan(gh, issue, triage, proposal, actions, assign_to=assign_to), log=log)

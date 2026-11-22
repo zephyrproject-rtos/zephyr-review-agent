@@ -682,6 +682,22 @@ commit is named with high confidence and GitHub accepts them as an assignee. The
 maintainer: the commit that introduced a line is not always the cause, and the author is not
 always still around. A run that fails posts nothing.
 
+`--ask` puts each change to you at the terminal before it is made, as `review --ask` does for a
+review. The triage is shown first; then one question each for the labels, the priority and the
+assignee; then the comment, which says what was added and assigned, and which you may edit in
+`comment.md` before it is posted.
+
+```sh
+zephyr-reviewer triage --repo ~/zephyrproject/zephyr --repository zephyrproject-rtos/zephyr \\
+    --issue 125070 --ask
+```
+
+It asks about every action, or with `--apply` only about the ones named there. Since you decide,
+a likely cause is enough to offer a priority and an assignee, and the author of the introducing
+commit is offered beside the maintainer. What you decline is not done, and the comment then lists
+it as a proposal. Without a terminal there is nobody to ask: nothing is changed and the triage is
+saved.
+
 [`examples/zephyr-ai-triage.yml`](examples/zephyr-ai-triage.yml) is a workflow for `issues`
 events, gated on an `ai-triage` label. It needs `issues: write`, and a clone with the whole
 history (`fetch-depth: 0`, `filter: blob:none`), since blame cannot see past a shallow clone.
