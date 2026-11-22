@@ -8,3 +8,6 @@ dist/
 .ruff_cache/
 review-output/
 benchmarks/runs/
+triage-output/
+triage-benchmark-runs/
+triage-benchmark.json
