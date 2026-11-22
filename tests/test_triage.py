@@ -508,3 +508,101 @@ def test_the_triage_command_changes_nothing_by_default(tree, mini_repo, stub, tm
     assert cli.main(["triage", "--issue-file", str(issue_file), *common]) == 0 and len(_Stub.turns) == 2
     assert cli.main(["triage", "--issue-file", str(issue_file), "--apply", "comment", *common]) == 2
     assert cli.main(["triage", "--issue-file", str(issue_file), "--apply", "close", *common]) == 2
+
+
+def test_a_closed_issue_becomes_an_entry_with_the_tree_before_its_fix(mini_repo):
+    from zephyr_reviewer.triage import benchmark as tb
+
+    root = str(mini_repo["root"])
+    last = mini_repo["head"]
+    node = {
+        "number": 9,
+        "title": "i2c foo hangs",
+        "body": BODY,
+        "labels": {"nodes": [{"name": "bug"}, {"name": "area: I2C"}, {"name": "priority: medium"}]},
+        "assignees": {"nodes": [{"login": "alice"}]},
+        "closedByPullRequestsReferences": {
+            "nodes": [
+                {
+                    "number": 12,
+                    "merged": True,
+                    "mergeCommit": {"oid": last},
+                    "commits": {"totalCount": 2},
+                    "files": {"nodes": [{"path": "drivers/i2c/i2c_foo.c"}, {"path": "drivers/i2c/Kconfig"}]},
+                }
+            ]
+        },
+    }
+    e = tb.entry_from(node, root)
+    assert e.before == mini_repo["base"] and e.fix_commit == last and e.fix_pr == 12
+    assert e.labels == ["area: I2C"] and e.priority == "medium" and e.assignees == ["alice"]
+    assert e.culprits == []  # this fix only adds lines: nothing to blame, so no introducing commit is claimed
+    # Not merged, two fixes, or a fix that is not in this clone: nothing to measure against.
+    unmerged = json.loads(json.dumps(node))
+    unmerged["closedByPullRequestsReferences"]["nodes"][0]["merged"] = False
+    absent = json.loads(json.dumps(node))
+    absent["closedByPullRequestsReferences"]["nodes"][0]["mergeCommit"]["oid"] = "0" * 40
+    assert tb.entry_from(unmerged, root) is None and tb.entry_from(absent, root) is None
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content)["variables"])
+        nodes = [node, unmerged, {}]
+        return httpx.Response(200, json={"data": {"search": {"pageInfo": {"hasNextPage": False}, "nodes": nodes}}})
+
+    gh = GitHub("t", "o/r", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    logs: list[str] = []
+    entries = tb.mine(gh, root, since="2026-09-01", log=logs.append)
+    assert [x.number for x in entries] == [9] and "closed:>=2026-09-01" in seen[0]["q"] and "linked:pr" in seen[0]["q"]
+    assert logs == ["1 of 2 closed issues usable (1 without one merged fix in this clone)"]
+
+
+async def test_the_benchmark_triages_before_the_fix_and_scores_against_what_was_done(tree, mini_repo, tmp_path):
+    from zephyr_reviewer.triage import benchmark as tb
+
+    intel, culprit = tree
+    entry = tb.Entry(
+        number=9,
+        title="i2c foo hangs",
+        body=BODY,
+        labels=["area: I2C", "platform: Vnd"],
+        priority="medium",
+        assignees=["alice"],
+        fix_pr=12,
+        fix_commit=mini_repo["head"],
+        before=mini_repo["head"],  # the mini tree's defect is at its head: treat that as "before the fix"
+        fix_files=["drivers/i2c/i2c_foo.c"],
+        culprits=[culprit],
+    )
+    router = TriageRouter(culprit)
+    llms = []
+    for name in ("cheap/a", "strong/model"):
+        llm = _llm(ScriptedOpenRouter([]), models=(name,))
+        llm._client = httpx.Client(transport=httpx.MockTransport(router.handler))
+        llms.append(llm)
+    quiet = lambda m: None  # noqa: E731
+    result = await tb.run_benchmark([entry], str(mini_repo["root"]), llms[:1], llms[1], str(tmp_path), log=quiet)
+    s = result["entries"][0]
+    assert s["verdict"] == "confirmed" and s["file_hit"] and s["dir_hit"] and s["culprit_hit"]
+    assert (s["labels_truth"], s["labels_proposed"], s["labels_right"]) == (
+        2,
+        2,
+        1,
+    )  # area: I2C right, Regression not given
+    assert s["priority_known"] and not s["priority_hit"]
+    # The model saw the report alone: no comments, and none of the labels maintainers gave it.
+    opening = router.requests[0]["messages"][1]["content"]
+    assert "<issue_comments>" not in opening and "platform: Vnd" not in opening and "mallory" not in opening
+    r = result["summary"]
+    assert (r["issues"], r["completed"], r["file_hit_pct"], r["culprit_hit_of_named_pct"]) == (1, 1, 100.0, 100.0)
+    assert (r["label_precision_pct"], r["label_recall_pct"], r["priority_hit_pct"]) == (50.0, 50.0, 0.0)
+    assert "in a file the fix touched: 100.0% of all" in tb.render(r)
+    assert json.loads((tmp_path / "report.json").read_text())["summary"] == r
+    # A finished entry is not paid for twice.
+    asked = len(router.requests)
+    await tb.run_benchmark([entry], str(mini_repo["root"]), llms[:1], llms[1], str(tmp_path), log=quiet)
+    assert len(router.requests) == asked
+    # A run with no result counts as an issue, not as a triage.
+    empty = tb.report([tb.score(entry, {"triage": None})])
+    assert (empty["issues"], empty["completed"], empty["located_pct"]) == (1, 0, 0.0)

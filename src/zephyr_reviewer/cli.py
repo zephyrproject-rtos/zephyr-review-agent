@@ -1185,6 +1185,9 @@ def build_parser() -> argparse.ArgumentParser:
     triage_command.add_args(g)
     g.set_defaults(fn=triage_command.cmd_triage)
 
+    gb = sub.add_parser("triage-benchmark", help="Measure the triage against issues closed with a fix")
+    triage_command.add_benchmark_args(gb)
+
     o = sub.add_parser("post", help="Publish a review saved by an earlier run (after reading or editing comment.md)")
     o.add_argument("--output-dir", default="review-output", help="Directory holding review.json and comment.md")
     o.add_argument("--repository", help="GitHub owner/name (default: from review.json or $GITHUB_REPOSITORY)")

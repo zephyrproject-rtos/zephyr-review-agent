@@ -1,0 +1,63 @@
+# Drop this into .github/workflows/ of the Zephyr repository (or a fork) to triage reported issues.
+#
+# An issue's text is written by whoever opens it, and this workflow runs with the repository's token
+# and secrets. That is safe only because nothing from the issue is executed: the report is read as
+# data, the tree is read through git plumbing, and nothing is built or run. Keep it that way; do not
+# add steps that build a reproducer or run a command taken from the report.
+#
+# The triage is gated on an `ai-triage` label so that cost is opt-in while the system matures. To
+# triage every new bug report, drop the label conditions from the job's `if`.
+
+name: AI Triage
+
+on:
+  issues:
+    types: [opened, labeled]
+
+permissions:
+  contents: read
+  issues: write     # the comment; and labels and assignees, if triage_apply allows them
+
+concurrency:
+  group: ai-triage-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    if: >-
+      contains(github.event.issue.labels.*.name, 'ai-triage')
+      && (github.event.action != 'labeled' || github.event.label.name == 'ai-triage')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # The whole history, without file contents until they are asked for: finding the commit that
+      # introduced a defect needs blame and a search of the history, which a shallow clone cannot give.
+      - name: Check out the default branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          filter: blob:none
+          persist-credentials: false
+
+      - name: Triage
+        uses: zephyrproject-rtos/zephyr-review-agent@main
+        with:
+          command: triage
+          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          model: ${{ vars.AI_REVIEW_MODEL || 'google/gemini-3.8-flash' }}
+          draft_ensemble: ${{ vars.AI_REVIEW_DRAFT_ENSEMBLE || 'deepseek/deepseek-v4.1-flash,z-ai/glm-5.3-flash' }}
+          provider: '{"data_collection": "deny"}'
+          quiet: "true"
+          # Start with the comment alone. `comment,labels` also files the issue under its area;
+          # `priority` and `assign` act only on a confirmed cause, and are best left off until the
+          # benchmark (`zephyr-reviewer triage-benchmark`) says how often the triage is right.
+          triage_apply: comment
+
+      - name: Upload triage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-triage-${{ github.event.issue.number }}-${{ github.run_id }}
+          path: triage-output/
+          retention-days: 30

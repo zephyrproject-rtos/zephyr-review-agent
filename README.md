@@ -626,6 +626,87 @@ and `dry_run` plus the uploaded artifacts let a maintainer read the review befor
 the pull request. Decide with the project how it should be used before enabling posting on the
 upstream repository.
 
+## Triage of reported issues
+
+`zephyr-reviewer triage` is a second mode beside the review. Given a bug report it tries to answer
+what a maintainer asks first: is this a defect in the tree, where is it, which commit introduced
+it, and how should the issue be filed. It shares the source intelligence, the agent loop and the
+model settings with the review, and nothing of the review's pipeline, prompts or comments.
+
+```sh
+# Prints the comment it would post and writes triage-output/; changes nothing.
+zephyr-reviewer triage --repo ~/zephyrproject/zephyr --repository zephyrproject-rtos/zephyr \
+    --issue 125070 --draft-ensemble deepseek/deepseek-v4.1-flash,z-ai/glm-5.3-flash \
+    --model google/gemini-3.8-flash
+```
+
+How a run goes:
+
+1. **The report is read without a model.** The sections of Zephyr's bug form are split, and what
+   the text names is matched against the tree: files (also under the reporter's own workspace
+   path), Kconfig symbols, functions, boards, commits and releases. A feature request, a question
+   or a pull request is skipped.
+2. **Candidate causes.** The draft models look for code that can produce the symptom, in
+   parallel. Without draft models the deciding model does this itself.
+3. **A verdict.** One model checks the candidates against the code and decides: `confirmed`,
+   `plausible`, `not_a_bug`, `needs_info` or `cannot_confirm`. Nothing is built and nothing is
+   run, so "confirmed" means confirmed by reading the code, and the comment says so. A verdict
+   submitted because the budget ran out confirms nothing: it is reported as plausible.
+4. **The commit.** For a located cause the model traces the lines with `blame`, `search_history`
+   and `show_commit`, tools only a triage run is given. It names a commit only when that commit's
+   patch creates the defect, with a confidence.
+5. **The filing.** Labels, a priority with its reason, likely duplicates and a fix.
+
+What reaches the issue is derived or checked, not taken from the model. A cause must be in a file
+that exists at the commit, and a commit must be in the history, or the submission is sent back.
+The labels are the ones `MAINTAINERS.yml` gives the file with the defect; what the model adds
+counts only as an `area:` or `platform:` label the repository has. The commit's author, date and
+first release come from the repository. The comment names a commit, never a person, and mentions
+nobody.
+
+The issue text is untrusted, as a pull request's description is: it reaches the models delimited
+and stripped of hidden text, and the prompts treat it as a description of a symptom. A report that
+tells the triage how to label or whom to assign changes neither, because neither is the model's
+to decide.
+
+### What a triage run may do
+
+Nothing, by default: it prints the comment. `--apply` (the action's `triage_apply`) allows each
+action separately.
+
+| Action | What it does | What it needs |
+| --- | --- | --- |
+| `comment` | Posts the triage, once per issue | A completed run |
+| `labels` | Adds the area and platform labels | A located cause |
+| `priority` | Adds `priority: low`, `medium` or `high` | A confirmed cause, and no priority set yet |
+| `assign` | Assigns the area's maintainer | A confirmed cause, and nobody assigned yet |
+
+With `--assign-to author` the author of the introducing commit is assigned instead, when that
+commit is named with high confidence and GitHub accepts them as an assignee. The default is the
+maintainer: the commit that introduced a line is not always the cause, and the author is not
+always still around. A run that fails posts nothing.
+
+[`examples/zephyr-ai-triage.yml`](examples/zephyr-ai-triage.yml) is a workflow for `issues`
+events, gated on an `ai-triage` label. It needs `issues: write`, and a clone with the whole
+history (`fetch-depth: 0`, `filter: blob:none`), since blame cannot see past a shallow clone.
+
+### Measuring it before turning it on
+
+A closed bug with a merged fix says where the defect was, how maintainers filed it and, by blame
+of the lines the fix removed, which commit introduced it.
+
+```sh
+zephyr-reviewer triage-benchmark mine --repo ~/zephyrproject/zephyr \
+    --repository zephyrproject-rtos/zephyr --since 2026-10-01 --max 100
+zephyr-reviewer triage-benchmark run triage-benchmark.json --repo ~/zephyrproject/zephyr --limit 20
+```
+
+`run` triages each issue against the tree as it was just before its fix, from the report alone: no
+comments and none of the labels it was given. It reports how often the cause was located, how
+often in a file or directory the fix touched, how the proposed labels and priority compare with
+the ones given, how often the named commit is one the fix's removed lines are blamed on, and the
+cost. A finished entry is not run again, and `--analyze-only` scores a directory without a model.
+
 ## Benchmarking against history
 
 Every change to the profile, the pipeline or the model choice should have a number. The benchmark
@@ -691,7 +772,8 @@ trailer` when precision matters more than size.
 | `src/zephyr_reviewer/review/linked.py` | Issues and PRs the change refers to; digest and `linked_issue` tool |
 | `src/zephyr_reviewer/review/render.py`, `publish.py`, `github_api.py` | Comment rendering and delivery |
 | `src/zephyr_reviewer/benchmark/` | Dataset mining from fix history, LLM judge, runner and report |
-| `src/zephyr_reviewer/cli.py` | `serve`, `review`, `post`, `benchmark`, `tools`, `call` |
+| `src/zephyr_reviewer/triage/` | Issue triage: the report, the run, the derived filing, the comment, the gated actions, its benchmark |
+| `src/zephyr_reviewer/cli.py` | `serve`, `review`, `triage`, `triage-benchmark`, `post`, `benchmark`, `tools`, `call` |
 | `tests/` | A miniature Zephyr-shaped repository fixture; intel, MCP (in-process and stdio), agent, publish tests |
 
 ## What is not done
