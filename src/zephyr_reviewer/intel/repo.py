@@ -59,6 +59,9 @@ def _pathspec(pattern: str | None) -> list[str]:
     return [pattern.rstrip("/")]
 
 
+_REVISION = re.compile(r"^(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$")  # one commit: no option, no range
+
+
 class GitRepo:
     def __init__(self, root: str | Path, ref: str):
         self.root = Path(root).resolve()
@@ -236,6 +239,65 @@ class GitRepo:
         return self._run(
             "blame", "--date=short", "--abbrev=12", "-L", f"{start},{end}", self.sha, "--", path, check=False
         )
+
+    def resolve(self, rev: str) -> str | None:
+        """The full id of a commit named by an id or a tag, or None. Anything that is not a plain revision
+        name (an option, a range, a path) is refused before it reaches git."""
+        rev = (rev or "").strip()
+        if not _REVISION.match(rev):
+            return None
+        out = self._run("rev-parse", "--verify", "--quiet", "--end-of-options", f"{rev}^{{commit}}", check=False)
+        sha = out.strip()
+        return sha if re.fullmatch(r"[0-9a-f]{40,64}", sha) else None
+
+    def is_ancestor(self, sha: str, of: str | None = None) -> bool:
+        proc = subprocess.run(
+            ["git", "-C", str(self.root), "merge-base", "--is-ancestor", sha, of or self.sha],
+            capture_output=True,
+            check=False,
+        )
+        return proc.returncode == 0
+
+    def commit_info(self, sha: str) -> dict[str, str] | None:
+        """One commit's id, author, date, subject and body."""
+        fmt = "%H%x00%an%x00%ae%x00%ad%x00%s%x00%b"
+        out = self._run("show", "-s", "--date=short", f"--format={fmt}", sha, check=False)
+        parts = out.split("\0")
+        if len(parts) < 6:
+            return None
+        keys = ("sha", "author", "email", "date", "subject", "body")
+        return {k: v.strip() for k, v in zip(keys, parts, strict=False)}
+
+    def show_commit(self, sha: str, max_bytes: int = 200_000) -> str:
+        """A commit's message, its file statistics and its patch."""
+        return self._run(
+            "show",
+            "--no-color",
+            "--no-ext-diff",
+            "--stat=120",
+            "--patch",
+            "--date=short",
+            "--format=fuller",
+            sha,
+            check=False,
+            max_bytes=max_bytes,
+        )
+
+    def pickaxe(self, text: str, path: str | None = None, n: int = 15, regex: bool = False) -> list[Commit]:
+        """Commits reachable from this one that changed the number of occurrences of ``text`` (or, with
+        ``regex``, whose patch has an added or removed line matching it), newest first."""
+        fmt = "%H%x00%an%x00%s%x00%b%x1e"
+        args = ["log", f"-n{n}", f"--format={fmt}", ("-G" if regex else "-S") + text, self.sha]
+        if path:
+            args += ["--", *_pathspec(path)]
+        return _parse_commits(self._run(*args, check=False))
+
+    def releases_containing(self, sha: str, pattern: str = "v[0-9]*", limit: int = 6) -> list[str]:
+        """Release tags whose history has the commit, oldest first."""
+        out = self._run(
+            "tag", "--list", pattern, "--contains", sha, "--sort=creatordate", "--merged", self.sha, check=False
+        )
+        return [t for t in out.splitlines() if t.strip()][:limit]
 
     # ---------------------------------------------------------------------- diff
     def merge_base(self, other: str) -> str:

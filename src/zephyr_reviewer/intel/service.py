@@ -391,6 +391,35 @@ class SourceIntel:
         text = self.head.blame(path, start, end)
         return self._clip(text or f"No blame output for {path}:{start}-{end}.")
 
+    # ----------------------------------------------------------------- history
+    def commit(self, rev: str) -> str:
+        """A commit by id or tag: message, statistics, patch, and the first releases that have it."""
+        sha = self.head.resolve(rev)
+        if sha is None:
+            return f"No commit {rev!r} in this clone."
+        text = self.head.show_commit(sha)
+        if not self.head.is_ancestor(sha):
+            text = "(not in the history of the commit under analysis)\n" + text
+        releases = self.head.releases_containing(sha)
+        if releases:
+            text = f"First releases with this commit: {', '.join(releases[:3])}\n" + text
+        return self._clip(text)
+
+    def search_history(self, text: str, path: str | None = None, regex: bool = False, n: int = 15) -> str:
+        """Commits that added or removed ``text``: how a line, a call or a symbol came to be as it is."""
+        text = (text or "").strip()
+        if len(text) < 3:
+            return "Give at least three characters to search the history for."
+        commits = self.head.pickaxe(text, path, max(1, min(int(n), 40)), regex)
+        if not commits:
+            where = f" under {path}" if path else ""
+            note = " (shallow clone: older history not available)" if self.head.is_shallow() else ""
+            return f"No commit{where} added or removed {text!r}{note}."
+        out = [f"{c.short} {c.subject}  ({c.author})" for c in commits]
+        if self.head.is_shallow():
+            out.append("(shallow clone: older history not available)")
+        return "\n".join(out)
+
     def related_tests(self, path_or_symbol: str) -> str:
         out: list[str] = []
         subject = path_or_symbol.strip()

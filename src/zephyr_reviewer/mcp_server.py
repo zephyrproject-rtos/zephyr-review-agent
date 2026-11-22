@@ -107,8 +107,18 @@ instead of guessing. Results are plain text, bounded in size; narrow a query whe
 """
 
 
-def build_server(intel: SourceIntel, name: str = "zephyr-source-intel") -> MCPServer:
-    srv = MCPServer(name, instructions=INSTRUCTIONS, version="0.1.0")
+HISTORY_INSTRUCTIONS = """\
+Source intelligence for the Zephyr RTOS tree at one commit; nothing is executed. Read whole functions
+with read_file, and use find_definition / find_references / kconfig_symbol / dt_binding to verify
+assumptions instead of guessing. blame, file_history, search_history and show_commit say how code came
+to be as it is. Results are plain text, bounded in size; narrow a query when told so.\
+"""
+
+
+def build_server(intel: SourceIntel, name: str = "zephyr-source-intel", *, history: bool = False) -> MCPServer:
+    """``history`` adds the tools that trace a line to the commit that made it (issue triage). A review
+    does not get them: its tool list is part of every request it pays for."""
+    srv = MCPServer(name, instructions=HISTORY_INSTRUCTIONS if history else INSTRUCTIONS, version="0.1.0")
 
     def _guarded(fn, *args, **kwargs):
         try:
@@ -235,6 +245,21 @@ def build_server(intel: SourceIntel, name: str = "zephyr-source-intel") -> MCPSe
         style-cmake, style-devicetree, coding-guidelines, bindings, kconfig-tips, or a doc/ path."""
         return await guard(intel.guidelines, topic)
 
+    if history:
+
+        @srv.tool(structured_output=False)
+        async def show_commit(commit: str) -> str:
+            """One commit by id or release tag: its message, the files it touched, its patch, and the first
+            releases that contain it. Use it on a commit that blame or search_history points at."""
+            return await guard(intel.commit, commit)
+
+        @srv.tool(structured_output=False)
+        async def search_history(text: str, path: str | None = None, regex: bool = False, count: int = 15) -> str:
+            """Commits that added or removed a piece of text (a call, a symbol, a condition), newest first;
+            optionally under one path. With regex, commits whose patch has a changed line matching it. The
+            oldest one listed is usually the commit that introduced the text."""
+            return await guard(intel.search_history, text, path, regex, count)
+
     return srv
 
 
@@ -243,6 +268,7 @@ def add_server_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--head", default="HEAD", help="Commit under review (default: HEAD)")
     p.add_argument("--base", required=True, help="Base commit or ref, e.g. upstream/main or a merge-base SHA")
     p.add_argument("--max-chars", type=int, default=24_000, help="Per-result size cap")
+    p.add_argument("--history", action="store_true", help="Also offer the tools that trace code to a commit")
     p.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8765)
@@ -259,7 +285,7 @@ def _only_broken_pipes(exc: BaseException) -> bool:
 
 def serve(args: argparse.Namespace) -> int:
     intel = SourceIntel(args.repo, args.head, args.base, max_chars=args.max_chars)
-    srv = build_server(intel)
+    srv = build_server(intel, history=getattr(args, "history", False))
     try:
         if args.transport == "stdio":
             srv.run(transport="stdio")

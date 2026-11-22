@@ -122,6 +122,40 @@ class GitHub:
     def issue_comments(self, number: int, repo: str | None = None) -> list[dict[str, Any]]:
         return self._paginate(f"/repos/{repo or self.repo}/issues/{number}/comments")
 
+    # ----------------------------------------------------------- issues
+    def repo_labels(self) -> list[str]:
+        """Every label the repository defines."""
+        return [str(lab.get("name") or "") for lab in self._paginate(f"/repos/{self.repo}/labels")]
+
+    def search_issues(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Issues of this repository matching a search, best match first."""
+        q = f"repo:{self.repo} is:issue {query}".strip()
+        data = self._request("GET", "/search/issues", params={"q": q, "per_page": max(1, min(limit, 30))}).json()
+        return list(data.get("items") or []) if isinstance(data, dict) else []
+
+    def add_labels(self, number: int, labels: list[str]) -> list[str]:
+        resp = self._request("POST", f"/repos/{self.repo}/issues/{number}/labels", json_body={"labels": labels})
+        return [str(lab.get("name") or "") for lab in resp.json()]
+
+    def assignable(self, login: str) -> bool:
+        """Whether GitHub would accept the user as an assignee of an issue here."""
+        try:
+            return self._request("GET", f"/repos/{self.repo}/assignees/{login}").status_code == 204
+        except GitHubError:
+            return False
+
+    def add_assignees(self, number: int, logins: list[str]) -> list[str]:
+        resp = self._request("POST", f"/repos/{self.repo}/issues/{number}/assignees", json_body={"assignees": logins})
+        return [str(a.get("login") or "") for a in resp.json().get("assignees") or []]
+
+    def commit_author_login(self, sha: str) -> str:
+        """The GitHub account of a commit's author, when GitHub can tell."""
+        try:
+            data = self._request("GET", f"/repos/{self.repo}/commits/{sha}").json()
+        except GitHubError:
+            return ""
+        return str(((data.get("author") or {}) if isinstance(data, dict) else {}).get("login") or "")
+
     def review_comments(self, number: int) -> list[dict[str, Any]]:
         return self._paginate(f"/repos/{self.repo}/pulls/{number}/comments")
 
