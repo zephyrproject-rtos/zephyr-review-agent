@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,7 @@ name = "zephyr-reviewer"
 version = "0.1.0"
 description = "Source intelligence for the Zephyr tree over MCP, and an OpenRouter-backed review agent that uses it."
 readme = "README.md"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 authors = [{ name = "Anas Nashif" }]
 requires-python = ">=3.11"
 dependencies = [
