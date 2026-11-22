@@ -80,22 +80,23 @@ def _settings(args: argparse.Namespace) -> tuple[ReviewConfig, dict[str, Any]]:
     for attr, key in (("repo_root", "repo_root"), ("repository", "repo_slug"), ("api_key", "openrouter_api_key")):
         if getattr(args, attr, None) is not None:
             setattr(cfg, key, getattr(args, attr))
-    if args.github_token is not None:
+    opt = lambda name: getattr(args, name, None)  # noqa: E731 - the benchmark's options are a subset
+    if opt("github_token") is not None:
         cfg.github_token = args.github_token
-    if args.model:
+    if opt("model"):
         cfg.models = [args.model] + [m for m in cfg.models[1:] if m != args.model]
-    if args.draft_ensemble is not None:
+    if opt("draft_ensemble") is not None:
         cfg.draft_ensemble = [m.strip() for m in args.draft_ensemble.split(",") if m.strip()]
-    if args.provider:
+    if opt("provider"):
         cfg.provider = json.loads(args.provider)
-    cfg.quiet = cfg.quiet or args.quiet
-    cfg.in_process_server = cfg.in_process_server or args.in_process_server
+    cfg.quiet = cfg.quiet or bool(opt("quiet"))
+    cfg.in_process_server = cfg.in_process_server or bool(opt("in_process_server"))
     own = {
-        "issue": args.issue or (int(_env("issue_number")) if _env("issue_number").strip().isdigit() else None),
-        "head": args.head or _env("triage_head", "HEAD"),
-        "actions": args.apply if args.apply is not None else _env("triage_apply", "none"),
-        "assign_to": args.assign_to or _env("triage_assign_to", "maintainer"),
-        "output_dir": args.output_dir or _env("triage_output_dir", "triage-output"),
+        "issue": opt("issue") or (int(_env("issue_number")) if _env("issue_number").strip().isdigit() else None),
+        "head": opt("head") or _env("triage_head", "HEAD"),
+        "actions": opt("apply") if opt("apply") is not None else _env("triage_apply", "none"),
+        "assign_to": opt("assign_to") or _env("triage_assign_to", "maintainer"),
+        "output_dir": opt("output_dir") or _env("triage_output_dir", "triage-output"),
         "tag": _env("triage_tag", TAG),
         "locate_max_steps": int(_env("triage_locate_max_steps", "20")),
         "confirm_max_steps": int(_env("triage_confirm_max_steps", "25")),
@@ -195,6 +196,98 @@ def save(out_dir: str, run: TriageRun, body: str, issue: Issue, commit: str, pro
         for t in run.transcript:
             fh.write(json.dumps(t) + "\n")
     return d
+
+
+def add_benchmark_args(p: argparse.ArgumentParser) -> None:
+    sub = p.add_subparsers(dest="tcmd", required=True)
+    m = sub.add_parser("mine", help="Build a dataset from closed bug reports that have one merged fix")
+    m.add_argument("--repo", default=".", help="A full clone of the repository")
+    m.add_argument("--repository", help="GitHub owner/name (default: $GITHUB_REPOSITORY)")
+    m.add_argument("--github-token", help="GitHub token (default: $GITHUB_TOKEN)")
+    m.add_argument("--since", help="Only issues closed on or after this date, e.g. 2026-09-01")
+    m.add_argument("--which", default="type:Bug", help="Search qualifier selecting bug reports, e.g. label:bug")
+    m.add_argument("--max", type=int, default=100)
+    m.add_argument("--out", default="triage-benchmark.json")
+    m.set_defaults(fn=cmd_benchmark_mine)
+    r = sub.add_parser("run", help="Triage each issue against the tree before its fix, and score the result")
+    r.add_argument("file", help="Dataset produced by `triage-benchmark mine`")
+    r.add_argument("--repo", default=".")
+    r.add_argument("--output-dir", default="triage-benchmark-runs")
+    r.add_argument("--analyze-only", action="store_true", help="Score what the output directory holds; run no model")
+    r.add_argument("--limit", type=int, default=0)
+    r.add_argument("--offset", type=int, default=0)
+    r.add_argument("--concurrency", type=int, default=2)
+    r.add_argument("--model")
+    r.add_argument("--draft-ensemble")
+    r.add_argument("--provider")
+    r.add_argument("--api-key")
+    r.set_defaults(fn=cmd_benchmark_run)
+
+
+def cmd_benchmark_mine(args: argparse.Namespace) -> int:
+    from ..cli import log
+    from . import benchmark as tb
+
+    token = args.github_token or os.environ.get("GITHUB_TOKEN", "")
+    slug = args.repository or os.environ.get("GITHUB_REPOSITORY", "")
+    if not token or not slug:
+        log("::error::mining needs a GitHub token and --repository")
+        return 2
+    entries = tb.mine(
+        GitHub(token, slug), args.repo, since=args.since or "", which=args.which, max_entries=args.max, log=log
+    )
+    tb.save(entries, args.out)
+    log(f"{len(entries)} entries written to {args.out}")
+    return 0
+
+
+def cmd_benchmark_run(args: argparse.Namespace) -> int:
+    from ..cli import log, run_async
+    from . import benchmark as tb
+
+    entries = tb.load(args.file)[args.offset :]
+    entries = entries[: args.limit] if args.limit else entries
+    if args.analyze_only:
+        scores = []
+        for e in entries:
+            saved = Path(args.output_dir) / str(e.number) / "triage.json"
+            if saved.exists():
+                scores.append(tb.score(e, json.loads(saved.read_text(encoding="utf-8"))))
+        print(tb.render(tb.report(scores)))
+        return 0
+    args.repo_root = args.repo
+    cfg, own = _settings(args)
+    if not cfg.openrouter_api_key:
+        log("::error::an OpenRouter API key is required (--api-key or OPENROUTER_API_KEY)")
+        return 2
+
+    def llm(models: list[str]) -> OpenRouter:
+        return OpenRouter(
+            cfg.openrouter_api_key,
+            models,
+            base_url=cfg.base_url,
+            temperature=cfg.temperature,
+            max_tokens=cfg.max_tokens,
+            provider=cfg.provider,
+            timeout=cfg.model_timeout_seconds,
+        )
+
+    drafters = cfg.draft_models[:1] + [m for m in cfg.draft_ensemble if m not in cfg.draft_models[:1]]
+    result = run_async(
+        tb.run_benchmark(
+            entries,
+            args.repo,
+            [llm([m]) for m in drafters],
+            llm(cfg.models),
+            args.output_dir,
+            concurrency=args.concurrency,
+            log=log,
+            locate_max_steps=own["locate_max_steps"],
+            confirm_max_steps=own["confirm_max_steps"],
+        )
+    )
+    print(tb.render(result["summary"]))
+    return 0
 
 
 def cmd_triage(args: argparse.Namespace) -> int:

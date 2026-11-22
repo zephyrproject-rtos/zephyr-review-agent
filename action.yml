@@ -20,6 +20,40 @@ inputs:
       resolveReviewThread); without it the reply is posted and the thread is left open.
     required: false
     default: ${{ github.token }}
+  command:
+    description: >-
+      What to run: `review` reviews a pull request, `triage` analyses a reported issue. The two
+      share models, keys and budgets and nothing else; every other input below that names a pull
+      request or a review applies to `review` only.
+    required: false
+    default: "review"
+  issue_number:
+    description: "triage: issue number. Defaults to the number in the triggering event."
+    required: false
+    default: ""
+  triage_apply:
+    description: >-
+      triage: what the run may do to the issue, comma-separated: `comment` (post the triage),
+      `labels` (add the area and platform labels MAINTAINERS gives the file with the defect),
+      `priority` (add a priority label; needs a confirmed cause), `assign` (assign the area's
+      maintainer; needs a confirmed cause and an issue nobody is assigned to). `all`, or `none`,
+      which only writes the artifacts.
+    required: false
+    default: "none"
+  triage_assign_to:
+    description: >-
+      triage, with assign: `maintainer`, or `author` for the author of the commit that introduced
+      the defect, when that commit is named with high confidence and GitHub accepts them.
+    required: false
+    default: "maintainer"
+  triage_head:
+    description: "triage: commit to analyse against. Defaults to HEAD of the checkout."
+    required: false
+    default: "HEAD"
+  triage_output_dir:
+    description: "triage: where comment.md, triage.json and transcript.jsonl are written."
+    required: false
+    default: "triage-output"
   pr_number:
     description: "Pull request number. Defaults to the number in the triggering event."
     required: false
@@ -341,7 +375,9 @@ inputs:
 
 outputs:
   verdict:
-    description: "approve, comment, request_changes, skipped or error."
+    description: >-
+      review: approve, comment, request_changes, skipped or error. triage: confirmed, plausible,
+      cannot_confirm, not_a_bug, needs_info or skipped.
     value: ${{ steps.review.outputs.verdict }}
   findings_count:
     value: ${{ steps.review.outputs.findings_count }}
@@ -388,8 +424,19 @@ runs:
     - name: Review
       id: review
       shell: bash
-      run: PYTHONPATH="${GITHUB_ACTION_PATH}/src" python -P -m zephyr_reviewer review
+      run: |
+        case "${INPUT_COMMAND}" in
+          review|triage) ;;
+          *) echo "::error::command must be review or triage"; exit 2 ;;
+        esac
+        PYTHONPATH="${GITHUB_ACTION_PATH}/src" python -P -m zephyr_reviewer "${INPUT_COMMAND}"
       env:
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_ISSUE_NUMBER: ${{ inputs.issue_number }}
+        INPUT_TRIAGE_APPLY: ${{ inputs.triage_apply }}
+        INPUT_TRIAGE_ASSIGN_TO: ${{ inputs.triage_assign_to }}
+        INPUT_TRIAGE_HEAD: ${{ inputs.triage_head }}
+        INPUT_TRIAGE_OUTPUT_DIR: ${{ inputs.triage_output_dir }}
         INPUT_OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
         INPUT_PR_NUMBER: ${{ inputs.pr_number }}
