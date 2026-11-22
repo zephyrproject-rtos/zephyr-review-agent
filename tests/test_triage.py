@@ -22,7 +22,7 @@ from zephyr_reviewer.review.mcp_client import ToolBridge
 from zephyr_reviewer.triage.decide import commit_resolver, describe_culprit, propose
 from zephyr_reviewer.triage.issue import Issue, find_hints, split_sections
 from zephyr_reviewer.triage.pipeline import PR_ONLY_TOOLS, run_triage
-from zephyr_reviewer.triage.publish import apply, parse_actions
+from zephyr_reviewer.triage.publish import apply, parse_actions, plan
 from zephyr_reviewer.triage.render import marker, render_comment
 from zephyr_reviewer.triage.schema import Cause, Culprit, Triage, parse_causes, parse_triage
 
@@ -416,7 +416,8 @@ def test_each_action_is_allowed_separately_and_needs_the_verdict_that_supports_i
     unsure = _located(culprit)
     unsure.culprit.confidence = "medium"
     assert run(unsure, "assign", assign_to="author")[0]["assignees"] == ["alice"]
-    assert run(confirmed, "assign", assign_to="author", login="outsider")[0]["assignees"] == []
+    # An author GitHub would not accept is not a candidate: the maintainer is assigned.
+    assert run(confirmed, "assign", assign_to="author", login="outsider")[0]["assignees"] == ["alice"]
     # An issue that has an assignee keeps it.
     taken = _issue(assignees=[{"login": "carol"}])
     assert run(confirmed, "assign", issue=taken)[0]["assignees"] == []
@@ -606,3 +607,149 @@ async def test_the_benchmark_triages_before_the_fix_and_scores_against_what_was_
     # A run with no result counts as an issue, not as a triage.
     empty = tb.report([tb.score(entry, {"triage": None})])
     assert (empty["issues"], empty["completed"], empty["located_pct"]) == (1, 0, 0.0)
+
+
+def test_a_person_who_confirms_each_change_is_offered_more_than_an_unattended_run(tree):
+    intel, culprit = tree
+    known = ["area: I2C", "Regression", "priority: high"]
+    likely = _located(culprit, verdict="plausible")
+    issue = _issue()
+    p = propose(likely, intel, issue, known)
+    p.culprit_login = "dev"
+    actions = parse_actions("all")[0]
+    alone = plan(_gh([]), issue, likely, p, actions)
+    assert (alone.labels, alone.priority, alone.assignees) == (["area: I2C", "Regression"], "", [])
+    assert alone.withheld == [
+        "no priority is set on a cause that is not confirmed",
+        "nobody is assigned on a cause that is not confirmed",
+    ]
+    asked = plan(_gh([]), issue, likely, p, actions, attended=True)
+    assert asked.priority == "priority: high" and asked.withheld == []
+    assert asked.assignees == [("alice", "maintainer of Drivers: I2C"), ("dev", f"author of {culprit[:12]}")]
+    # Asked for and named with high confidence, the author comes first.
+    first = plan(_gh([]), issue, _located(culprit), p, actions, assign_to="author", attended=True)
+    assert [login for login, _ in first.assignees] == ["dev", "alice"]
+    taken = plan(_gh([]), _issue(assignees=[{"login": "carol"}]), likely, p, actions, attended=True)
+    assert taken.assignees == [] and taken.withheld == ["already assigned to carol"]
+    assert plan(_gh([]), issue, Triage("cannot_confirm", "Nothing.", "low"), p, actions, attended=True).empty
+
+
+class _GitHubStub(BaseHTTPRequestHandler):
+    """Enough of the GitHub API for one triage: the issue, the labels, who can be assigned, and the writes."""
+
+    writes: list[tuple[str, str, dict]] = []
+
+    def log_message(self, *a):
+        pass
+
+    def _send(self, status: int, payload=None):
+        data = json.dumps(payload).encode() if payload is not None else b""
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        path = self.path.split("?")[0]
+        if path.endswith("/issues/41"):
+            issue = {"number": 41, "title": "i2c: foo: transfer hangs", "body": BODY, "state": "open"}
+            return self._send(200, {**issue, "labels": [{"name": "bug"}], "user": {"login": "reporter"}})
+        if path.endswith("/issues/41/comments"):
+            return self._send(200, [])
+        if path.endswith("/labels"):
+            return self._send(200, [{"name": n} for n in ("area: I2C", "Regression", "priority: high", "bug")])
+        if "/assignees/" in path:
+            return self._send(204 if path.rsplit("/", 1)[1] in ("alice", "dev") else 404)
+        if "/commits/" in path:
+            return self._send(200, {"author": {"login": "dev"}})
+        if path.endswith("/search/issues"):
+            return self._send(200, {"items": []})
+        return self._send(404, {})
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        what = self.path.rsplit("/", 1)[1]
+        _GitHubStub.writes.append((what, self.path, body))
+        if what == "labels":
+            return self._send(200, [{"name": n} for n in body["labels"]])
+        if what == "assignees":
+            return self._send(201, {"assignees": [{"login": n} for n in body["assignees"]]})
+        return self._send(201, {"html_url": "https://github.com/o/r/issues/41#issuecomment-1"})
+
+
+@pytest.fixture
+def github_stub():
+    _GitHubStub.writes = []
+    server = HTTPServer(("127.0.0.1", 0), _GitHubStub)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+
+
+def test_ask_puts_every_change_to_the_caller_and_makes_only_those_confirmed(
+    tree, mini_repo, stub, github_stub, tmp_path, monkeypatch, capsys
+):
+    from zephyr_reviewer.triage import command
+
+    _, culprit = tree
+    monkeypatch.setenv("ZR_BASE_URL", stub)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+    monkeypatch.setenv("GITHUB_API_URL", github_stub)
+    for name in ("GITHUB_OUTPUT", "GITHUB_EVENT_PATH", "GITHUB_STEP_SUMMARY", "GITHUB_ACTIONS"):
+        monkeypatch.delenv(name, raising=False)
+    args = ["triage", "--repo", str(mini_repo["root"]), "--head", mini_repo["head"], "--in-process-server", "-q"]
+    args += ["--repository", "o/r", "--github-token", "t", "--issue", "41", "--again"]
+
+    def run(answers: list[str], *extra: str, terminal: bool = True):
+        _GitHubStub.writes = []
+        asked: list[str] = []
+        replies = list(answers)
+
+        def answer(question: str) -> str:
+            asked.append(question)
+            return replies.pop(0)
+
+        monkeypatch.setattr("builtins.input", answer)
+        monkeypatch.setattr(command, "has_terminal", lambda: terminal)
+        out = tmp_path / f"out{len(list(tmp_path.iterdir()))}"
+        rc = cli.main([*args, "--output-dir", str(out), *extra])
+        assert rc == 0 and replies == []
+        return asked, [(what, body) for what, _, body in _GitHubStub.writes], out
+
+    # Everything is offered, one question each, and the comment last, saying what was done.
+    asked, writes, out = run(["y", "y", "2", "y"], "--ask")
+    assert asked == [
+        "Add area: I2C, Regression to #41? [y]es / [n]o: ",
+        "Set priority: high on #41? [y]es / [n]o: ",
+        f"Assign #41 to: [1] alice (maintainer of Drivers: I2C) / [2] dev (author of {culprit[:12]}) / [n]obody: ",
+        "Post this comment to #41? [y]es / [n]o / [e]dit comment.md: ",
+    ]
+    assert [w[0] for w in writes] == ["labels", "assignees", "comments"]
+    assert writes[0][1] == {"labels": ["area: I2C", "Regression", "priority: high"]}
+    assert writes[1][1] == {"assignees": ["dev"]}
+    posted = writes[2][1]["body"]
+    assert "- Labels added: `area: I2C`, `Regression`" in posted and "- Priority set: `priority: high`" in posted
+    assert "- Assigned: `dev`" in posted and posted.startswith("<!-- zephyr-triage -->")
+    assert json.loads((out / "triage.json").read_text())["applied"]["assignees"] == ["dev"]
+    capsys.readouterr()
+
+    # What is declined is not done, and the comment then proposes it instead of claiming it.
+    asked, writes, _ = run(["n", "n", "n", "y"], "--ask")
+    assert [w[0] for w in writes] == ["comments"]
+    assert "- Labels: `area: I2C`, `Regression`" in writes[0][1]["body"] and "Assigned" not in writes[0][1]["body"]
+    # Declining the comment leaves the issue as it was, whatever else was confirmed before.
+    asked, writes, _ = run(["y", "n", "n", "n"], "--ask")
+    assert [w[0] for w in writes] == ["labels"] and writes[0][1] == {"labels": ["area: I2C", "Regression"]}
+    # With --apply, only what it allows is asked about.
+    asked, writes, _ = run(["y", "y"], "--ask", "--apply", "comment,labels")
+    assert len(asked) == 2 and [w[0] for w in writes] == ["labels", "comments"]
+    # Without a terminal there is nobody to ask: nothing is changed, and the triage is kept.
+    capsys.readouterr()
+    asked, writes, out = run([], "--ask", terminal=False)
+    assert asked == [] and writes == [] and (out / "comment.md").exists()
+    assert "## 🤖 AI triage (advisory)" in capsys.readouterr().out
+    # --apply without --ask asks nobody.
+    asked, writes, _ = run([], "--apply", "all")
+    assert asked == [] and [w[0] for w in writes] == ["labels", "assignees", "comments"]
+    assert writes[1][1] == {"assignees": ["alice"]}

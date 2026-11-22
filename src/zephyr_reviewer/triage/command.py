@@ -8,6 +8,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
+import sys
 import traceback
 from dataclasses import asdict
 from pathlib import Path
@@ -25,7 +27,7 @@ from ..review.openrouter import OpenRouter
 from .decide import LABEL_PREFIXES, Proposal, commit_resolver, describe_culprit, propose
 from .issue import Issue, find_hints
 from .pipeline import TriageRun, run_triage
-from .publish import ASSIGN_TO, apply, parse_actions
+from .publish import ACTIONS, ASSIGN_TO, Plan, carry_out, parse_actions, plan
 from .render import TAG, marker, render_comment
 
 SEARCH_ISSUES_TOOL = {
@@ -65,6 +67,12 @@ def add_args(p: argparse.ArgumentParser) -> None:
         help="With assign: the area's maintainer (default), or the author of the introducing commit when "
         "that commit is named with high confidence",
     )
+    p.add_argument(
+        "--ask",
+        action="store_true",
+        help="Show each change and ask before making it: the labels, the priority, the assignee, then the "
+        "comment. Asks about everything --apply allows, or about every action when --apply is not given",
+    )
     p.add_argument("--any-kind", action="store_true", help="Triage the issue even if it is not a bug report")
     p.add_argument("--again", action="store_true", help="Triage an issue this tool already commented on")
     p.add_argument("--no-comments", action="store_true", help="Do not show the issue's comments to the models")
@@ -95,6 +103,7 @@ def _settings(args: argparse.Namespace) -> tuple[ReviewConfig, dict[str, Any]]:
         "issue": opt("issue") or (int(_env("issue_number")) if _env("issue_number").strip().isdigit() else None),
         "head": opt("head") or _env("triage_head", "HEAD"),
         "actions": opt("apply") if opt("apply") is not None else _env("triage_apply", "none"),
+        "ask": bool(opt("ask")) or _env("triage_ask").strip().lower() in ("1", "true", "yes"),
         "assign_to": opt("assign_to") or _env("triage_assign_to", "maintainer"),
         "output_dir": opt("output_dir") or _env("triage_output_dir", "triage-output"),
         "tag": _env("triage_tag", TAG),
@@ -171,6 +180,70 @@ async def _run(cfg: ReviewConfig, own: dict, intel: SourceIntel, issue: Issue, g
             log=log,
             quiet=cfg.quiet,
         )
+
+
+def has_terminal() -> bool:
+    return sys.stdin.isatty() and sys.stderr.isatty()
+
+
+def _answer(question: str) -> str:
+    try:
+        return input(question).strip().lower()
+    except EOFError:
+        return "n"
+
+
+def _yes(question: str) -> bool:
+    while True:
+        a = _answer(f"{question} [y]es / [n]o: ")
+        if a in ("y", "yes"):
+            return True
+        if a in ("n", "no", ""):
+            return False
+        print("please answer y or n", file=sys.stderr)
+
+
+def ask_plan(p: Plan, issue: Issue) -> Plan:
+    """Put each planned change to the person at the terminal; what they decline is dropped."""
+    kept = Plan(withheld=list(p.withheld))
+    for note in p.withheld:
+        print(f"not offered: {note}", file=sys.stderr)
+    if p.labels and _yes(f"Add {', '.join(p.labels)} to #{issue.number}?"):
+        kept.labels = list(p.labels)
+    if p.priority and _yes(f"Set {p.priority} on #{issue.number}?"):
+        kept.priority = p.priority
+    if len(p.assignees) == 1:
+        login, why = p.assignees[0]
+        if _yes(f"Assign #{issue.number} to {login} ({why})?"):
+            kept.assignees = [p.assignees[0]]
+    elif p.assignees:
+        options = " / ".join(f"[{i}] {login} ({why})" for i, (login, why) in enumerate(p.assignees, 1))
+        while True:
+            a = _answer(f"Assign #{issue.number} to: {options} / [n]obody: ")
+            if a in ("n", "no", "nobody", ""):
+                break
+            if a.isdigit() and 1 <= int(a) <= len(p.assignees):
+                kept.assignees = [p.assignees[int(a) - 1]]
+                break
+            print(f"please answer 1 to {len(p.assignees)}, or n", file=sys.stderr)
+    return kept
+
+
+def ask_comment(body: str, path: Path, issue: Issue) -> tuple[bool, str]:
+    """Show the comment and ask to post it, with the chance to edit comment.md first."""
+    while True:
+        print("\n" + body + "\n", file=sys.stderr)
+        a = _answer(f"Post this comment to #{issue.number}? [y]es / [n]o / [e]dit comment.md: ")
+        if a in ("y", "yes"):
+            return True, body
+        if a in ("n", "no", ""):
+            return False, body
+        if a in ("e", "edit"):
+            editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+            subprocess.call([*editor.split(), str(path)])
+            body = path.read_text(encoding="utf-8")
+            continue
+        print("please answer y, n or e", file=sys.stderr)
 
 
 def save(out_dir: str, run: TriageRun, body: str, issue: Issue, commit: str, proposal: Proposal, applied) -> Path:
@@ -295,12 +368,15 @@ def cmd_triage(args: argparse.Namespace) -> int:
 
     cfg, own = _settings(args)
     actions, errors = parse_actions(own["actions"])
+    ask = own["ask"]
+    if ask and not actions and not errors:
+        actions = list(ACTIONS)  # asked about each, so every action may be offered
     if own["assign_to"] not in ASSIGN_TO:
         errors.append(f"assign-to must be one of {', '.join(ASSIGN_TO)}")
     if not cfg.openrouter_api_key:
         errors.append("an OpenRouter API key is required (--api-key or OPENROUTER_API_KEY)")
     if actions and (not cfg.github_token or not cfg.repo_slug):
-        errors.append("--apply needs a GitHub token and --repository")
+        errors.append(("--ask" if ask else "--apply") + " needs a GitHub token and --repository")
     for e in errors:
         log(f"::error::{e}")
     if errors:
@@ -359,19 +435,35 @@ def cmd_triage(args: argparse.Namespace) -> int:
     if gh is not None and triage.culprit is not None:
         triage.culprit.login = proposal.culprit_login = gh.commit_author_login(triage.culprit.commit)
     applied: dict[str, list[str]] = {}
+    attended = ask and has_terminal()
+    if ask and not attended:
+        # As for a review: without someone to ask, nothing is changed and the result is kept to be read.
+        log(f"::notice::--ask without a terminal: the triage was saved in {own['output_dir']}, nothing was changed")
+        actions = []
     if gh is not None and actions:
-        applied = apply(gh, issue, triage, proposal, actions, assign_to=own["assign_to"], log=log)
+        todo = plan(gh, issue, triage, proposal, actions, assign_to=own["assign_to"], attended=attended)
+        if attended:
+            print("\n" + render_comment(triage, proposal, commit, repo=cfg.repo_slug, tag=own["tag"]), file=sys.stderr)
+            todo = ask_plan(todo, issue)
+        applied = carry_out(gh, issue, todo, log=log)
     body = render_comment(
         triage, proposal, commit, repo=cfg.repo_slug, api_url=cfg.github_api_url, tag=own["tag"], applied=applied
     )
     d = save(own["output_dir"], run, body, issue, commit, proposal, applied)
     log(f"artifacts in {d}")
     url = ""
-    if gh is not None and "comment" in actions:
+    post = gh is not None and "comment" in actions
+    if post and attended:
+        post, body = ask_comment(body, d / "comment.md", issue)
+        if marker(own["tag"]) not in body:
+            body = marker(own["tag"]) + "\n" + body  # an edit must not lose what marks the issue as triaged
+    if post:
         url = gh.upsert_comment(issue.number, body, marker(own["tag"]))
         log(f"posted {url}")
-    else:
+    elif not attended:
         print(body)
+    else:
+        log("comment not posted")
     pub.write_summary(body)
     pub.write_outputs(
         {
