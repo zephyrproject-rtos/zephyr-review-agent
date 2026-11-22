@@ -664,8 +664,12 @@ How a run goes:
 
 What reaches the issue is derived or checked, not taken from the model. A cause must be in a file
 that exists at the commit, and a commit must be in the history, or the submission is sent back.
-The labels are the ones `MAINTAINERS.yml` gives the file with the defect; what the model adds
-counts only as an `area:` or `platform:` label the repository has. The commit's author, date and
+Areas, labels and whom to turn to come from `MAINTAINERS.yml` for the file with the defect,
+matched as `get_maintainer.py` matches: every area that has the file, with an area whose file
+groups defer to others (a subsystem's vendor drivers) after the one that takes precedence (the
+vendor's platform). A label the model adds counts only if `MAINTAINERS.yml` defines it for some
+area and the repository has it. The models are shown what `MAINTAINERS.yml` says about the files
+the report names, so they start from the project's own map of the tree. The commit's author, date and
 first release come from the repository. The comment names a commit, never a person, and mentions
 nobody.
 

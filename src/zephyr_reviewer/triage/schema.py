@@ -99,7 +99,8 @@ TRIAGE_TOOL = {
                 "labels": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Area and platform labels, as maintainers() lists them for the files involved",
+                    "description": "Labels of further areas involved, as the maintainers tool lists them; those of the "
+                    "cause's own file are added without being named",
                 },
                 "questions": {
                     "type": "array",

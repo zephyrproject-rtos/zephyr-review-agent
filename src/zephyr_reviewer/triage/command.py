@@ -24,7 +24,7 @@ from ..review.discussion import sanitize
 from ..review.github_api import GitHub, GitHubError, event_payload
 from ..review.mcp_client import ToolBridge, stdio_params
 from ..review.openrouter import OpenRouter
-from .decide import LABEL_PREFIXES, Proposal, commit_resolver, describe_culprit, propose
+from .decide import Proposal, area_lines, commit_resolver, describe_culprit, propose
 from .fixes import LinkedPull, before_the_fixes, load_linked_pulls
 from .issue import Issue, find_hints
 from .pipeline import TriageRun, run_triage
@@ -150,7 +150,6 @@ async def _run(
     intel: SourceIntel,
     issue: Issue,
     gh: GitHub | None,
-    labels,
     log,
     args,
     pulls: list[LinkedPull] | None = None,
@@ -168,6 +167,7 @@ async def _run(
         )
 
     drafters = cfg.draft_models[:1] + [m for m in cfg.draft_ensemble if m not in cfg.draft_models[:1]]
+    hints = find_hints(issue, intel.head)
     if cfg.in_process_server:
         target = mcp_server.build_server(intel, history=True)
     else:
@@ -180,12 +180,12 @@ async def _run(
             llm(cfg.models),
             bridge,
             issue,
-            find_hints(issue, intel.head),
+            hints,
             intel.head.sha,
             exists=intel.head.exists,
             resolve=commit_resolver(intel),
             repo=cfg.repo_slug,
-            labels=labels,
+            areas=area_lines(intel, hints.paths),
             extra_tools=[_search_tool(gh, issue)] if gh is not None else None,
             language=cfg.language,
             with_comments=not args.no_comments,
@@ -432,7 +432,6 @@ def cmd_triage(args: argparse.Namespace) -> int:
             repo_labels = gh.repo_labels()
         except GitHubError as exc:
             log(f"::warning::could not read the repository's labels, none will be proposed beyond MAINTAINERS: {exc}")
-    shown = sorted(lab for lab in repo_labels or [] if lab.lower().startswith(LABEL_PREFIXES))
     pulls: list[LinkedPull] = []
     if gh is not None and issue.number and not args.no_linked_prs and _env("triage_linked_prs", "true") != "false":
         pulls = load_linked_pulls(gh, issue.number, log=log)
@@ -447,7 +446,7 @@ def cmd_triage(args: argparse.Namespace) -> int:
     log(f"triaging #{issue.number} against {commit[:12]}: {issue.title[:80]}")
     tb = ""
     try:
-        run = run_async(_run(cfg, own, intel, issue, gh, shown, log, args, pulls))
+        run = run_async(_run(cfg, own, intel, issue, gh, log, args, pulls))
     except Exception as exc:  # noqa: BLE001 - a failed run posts nothing; say why and keep the traceback
         tb = traceback.format_exc()
         run = TriageRun(None, errors=[describe_error(exc)])

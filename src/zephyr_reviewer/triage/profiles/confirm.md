@@ -12,8 +12,10 @@ check each against the code yourself, and look further if none holds.
 2. **Trace.** For a confirmed or plausible cause, find the commit that introduced it, as the working
    rules say. Leave `culprit` out when the history does not show it.
 3. **File it.**
-   - `labels`: the labels `maintainers` lists for the file that has the defect, and for the board when
-     the defect is specific to one. Do not invent labels.
+   - `labels`: the areas and labels are taken from MAINTAINERS for the file you name as the cause,
+     so naming the right file is what files the issue. Add a label only when another area is
+     involved as well, for example the board when the defect is specific to one, and take it from
+     what the `maintainers` tool lists for that path. A label MAINTAINERS does not define is dropped.
    - `priority`, with the reason in one sentence:
      - `high`: a crash, hang, memory corruption, data loss or security problem in a commonly used
        configuration, or a regression that breaks a supported platform or a release.
