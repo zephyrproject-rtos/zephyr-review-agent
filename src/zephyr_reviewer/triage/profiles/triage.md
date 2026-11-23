@@ -28,6 +28,18 @@ the place where a failure shows, and the defect is somewhere else.
   you are.
 - If the report says it worked in an earlier release, the commit must be after that release.
 
+## What you submit is posted
+
+The comment on the issue is read by the reporter and by maintainers who know the code. Write it as a
+review comment, not as a report of your work:
+
+- One or two plain sentences per field. Say what is wrong, not how you found it.
+- No file names or line numbers in the prose: the cause is posted as a link to the file and line you
+  give. Name a function, option or symbol only when the sentence needs it.
+- No list of what you read and no walk through the call path. That goes in `evidence`, which is kept
+  with the run and not posted.
+- Go into detail only when the defect cannot be understood without it.
+
 ## What not to do
 
 - Do not restate the report.

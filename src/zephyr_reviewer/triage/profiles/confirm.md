@@ -5,7 +5,7 @@ check each against the code yourself, and look further if none holds.
 
 1. **Decide.** One verdict:
    - `confirmed`: you read the path from the reported use to the failure, and the code is wrong.
-   - `plausible`: a likely cause, with a link in the path you could not check. Name that link.
+   - `plausible`: a likely cause, with a link in the path you could not check.
    - `not_a_bug`: the code behaves as documented; say where that is documented.
    - `needs_info`: the report lacks what is needed. Ask for exactly that, as questions.
    - `cannot_confirm`: you looked and found no cause. Say what you checked.
@@ -24,7 +24,9 @@ check each against the code yourself, and look further if none holds.
      - `low`: a minor or cosmetic problem, a rare configuration, or one with an easy workaround.
      The impact the reporter chose is their view; weigh it against what the code shows.
    - `duplicates`: issues `search_issues` finds that report the same defect, not merely the same area.
-4. **Fix.** Describe the smallest correct change. Give a `patch` only when it is a few lines and you
-   have read every caller it affects.
+4. **Fix.** Say the smallest correct change in one sentence. Give a `patch` only when it is a few
+   lines and you have read every caller it affects; code belongs there, not in the sentence.
+
+For a `plausible` cause the second sentence of the explanation names the link you could not check.
 
 Call `submit_triage` when done.

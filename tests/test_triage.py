@@ -19,7 +19,7 @@ from zephyr_reviewer.intel import SourceIntel
 from zephyr_reviewer.mcp_server import build_server
 from zephyr_reviewer.review.github_api import GitHub
 from zephyr_reviewer.review.mcp_client import ToolBridge
-from zephyr_reviewer.triage.decide import area_lines, commit_resolver, describe_culprit, propose
+from zephyr_reviewer.triage.decide import Proposal, area_lines, commit_resolver, describe_culprit, propose
 from zephyr_reviewer.triage.fixes import LinkedPull, before_the_fixes, load_linked_pulls, parse_comparison
 from zephyr_reviewer.triage.issue import Issue, find_hints, split_sections
 from zephyr_reviewer.triage.pipeline import PR_ONLY_TOOLS, run_triage
@@ -320,9 +320,9 @@ async def test_a_lost_pass_is_counted_and_a_forced_verdict_confirms_nothing(tree
 def _located(culprit: str, **kw) -> Triage:
     t = Triage(
         verdict="confirmed",
-        summary="foo_transfer() returns with the lock held, as @reporter said",
+        summary="foo_transfer() returns with the lock held",
         confidence="high",
-        cause=Cause("", "drivers/i2c/i2c_foo.c", "returns before k_sem_give", line=17),
+        cause=Cause("", "drivers/i2c/i2c_foo.c", "returns before k_sem_give, as @reporter said", line=17),
         culprit=Culprit(
             culprit,
             "high",
@@ -1031,3 +1031,20 @@ def test_areas_labels_and_whom_to_turn_to_follow_the_maintainers_file(tree):
     assert asked == [("vera", "maintainer of Vnd Platforms"), ("alice", "maintainer of Drivers: I2C")]
     body = render_comment(_located(culprit), two, "a" * 40)
     assert "- Area: Vnd Platforms, Drivers: I2C" in body and "- Maintained by `vera` (Vnd Platforms)" in body
+
+
+def test_the_comment_is_brief(tree):
+    """A located cause is said once, and a model that wrote a page is cut at a sentence."""
+    intel, culprit = tree
+    long = "The lock is never released on the error path. " + "Then foo_transfer() calls bar(). " * 40
+    t = _located(culprit, fix=long)
+    t.cause.explanation = long
+    t.cause.evidence = "read_file drivers/i2c/i2c_foo.c 10-22"
+    body = render_comment(t, propose(t, intel, _issue(), ["area: I2C"]), intel.head.sha, repo="o/r")
+    assert t.summary not in body and "read_file" not in body
+    cause = body.split("### Likely cause")[1].split("###")[0]
+    assert "The lock is never released on the error path." in cause and len(cause) < 700
+    assert len(body.split("### Suggested fix")[1].split("```")[0]) < 450
+    # Without a cause the summary is what is said.
+    none = Triage(verdict="cannot_confirm", summary="No path from the report to a failure was found")
+    assert "No path from the report to a failure was found." in render_comment(none, Proposal(), intel.head.sha)

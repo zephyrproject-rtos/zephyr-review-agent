@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import re
+
 from ..review.github_api import file_url
 from ..review.render import guard_mentions
 from .decide import Proposal
@@ -46,6 +48,23 @@ def _sentence(text: str) -> str:
     return t if not t or t[-1] in ".!?:`)" else t + "."
 
 
+def _brief(text: str, sentences: int = 3, chars: int = 500) -> str:
+    """The first sentences of what a model wrote, for when it wrote a page where a line was asked for."""
+    t = " ".join((text or "").split())
+    if len(t) <= chars:
+        return _sentence(t)
+    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z`])", t)
+    kept: list[str] = []
+    for part in parts[:sentences]:
+        if kept and len(" ".join(kept + [part])) > chars:
+            break
+        kept.append(part)
+    out = " ".join(kept)
+    if len(out) > chars:
+        return guard_mentions(out[:chars].rsplit(" ", 1)[0].rstrip(",;:.")) + " …"
+    return _sentence(out)
+
+
 def render_comment(
     triage: Triage,
     proposal: Proposal,
@@ -69,14 +88,14 @@ def render_comment(
         "## 🤖 AI triage (advisory)",
         "",
         head,
-        "",
-        _sentence(triage.summary),
     ]
     c = triage.cause
-    if triage.located and c is not None:
+    if not (triage.located and c is not None):
+        out += ["", _brief(triage.summary)]
+    else:
         where = f"{c.file}:{c.line}" if c.line else c.file
         link = f"[`{where}`]({file_url(repo, commit, c.file, c.line or None, api_url)})" if repo else f"`{where}`"
-        out += ["", "### Likely cause", "", f"{link}: {_sentence(c.explanation)}"]
+        out += ["", "### Likely cause", "", f"{link}: {_brief(c.explanation)}"]
     k = triage.culprit
     if triage.located and k is not None:
         short = k.commit[:12]
@@ -84,17 +103,17 @@ def render_comment(
         line = f"{ref} {_quote(k.subject)}" + (f", {k.date}" if k.date else "")
         if k.releases:
             line += f", first released in {k.releases[0]}"
-        out += ["", "### Introduced by", "", f"{line} · confidence {k.confidence}", "", _sentence(k.reason)]
+        out += ["", "### Introduced by", "", f"{line} · confidence {k.confidence}", "", _brief(k.reason, 2, 300)]
     if triage.fix and triage.located:
-        out += ["", "### Suggested fix", "", _sentence(triage.fix)]
+        out += ["", "### Suggested fix", "", _brief(triage.fix, 2, 400)]
         if triage.patch:
             out += ["", "```diff", triage.patch.replace("```", "'''"), "```"]
     if comparisons:
         out += ["", "### Proposed fixes", "", COMPARED_NOTE, ""]
         for c in comparisons:
-            line = f"- #{c.number} ({c.state}): **{RELATION_LINES[c.relation]}** {_sentence(c.assessment)}"
+            line = f"- #{c.number} ({c.state}): **{RELATION_LINES[c.relation]}** {_brief(c.assessment, 2, 300)}"
             if c.concerns:
-                line += f" Open: {_sentence(c.concerns)}"
+                line += f" Open: {_brief(c.concerns, 2, 300)}"
             out.append(line)
     if triage.questions:
         out += ["", "### Questions for the reporter", ""] + [f"- {_sentence(q)}" for q in triage.questions]
