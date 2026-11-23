@@ -111,6 +111,8 @@ def comparison_message(
     c = triage.cause
     if triage.located and c is not None:
         out += ["", f"Cause: `{c.file}:{c.line}`" if c.line else f"Cause: `{c.file}`", c.explanation]
+        if c.evidence:
+            out += ["", "What it read: " + c.evidence]
         if triage.fix:
             out += ["", "Fix it would make: " + triage.fix]
         if triage.patch:

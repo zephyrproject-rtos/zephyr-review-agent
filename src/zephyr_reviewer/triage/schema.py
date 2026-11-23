@@ -70,7 +70,11 @@ TRIAGE_TOOL = {
                     "cause, with a link you could not check. cannot_confirm: no cause found. not_a_bug: the code "
                     "behaves as documented. needs_info: the report lacks what is needed to look.",
                 },
-                "summary": {"type": "string", "description": "Two or three sentences: what is wrong and why"},
+                "summary": {
+                    "type": "string",
+                    "description": "One or two plain sentences: the result. Posted on its own only when no cause "
+                    "is named; with a cause, the cause's explanation is what is posted.",
+                },
                 "confidence": {"type": "string", "enum": LEVELS},
                 "cause": {
                     "type": "object",
@@ -78,7 +82,17 @@ TRIAGE_TOOL = {
                     "properties": {
                         "file": {"type": "string"},
                         "line": {"type": "integer"},
-                        "explanation": {"type": "string"},
+                        "explanation": {
+                            "type": "string",
+                            "description": "One or two plain sentences a maintainer can act on: what the code "
+                            "does wrong and when. Posted next to a link to the file and line, so no file names "
+                            "or line numbers; name a function or symbol only when the sentence needs it.",
+                        },
+                        "evidence": {
+                            "type": "string",
+                            "description": "What you read that shows it: files, lines, symbols, the path from "
+                            "the reported use to the failure. Kept with the run, not posted.",
+                        },
                     },
                     "required": ["file", "explanation"],
                 },
@@ -89,13 +103,16 @@ TRIAGE_TOOL = {
                     "properties": {
                         "commit": {"type": "string", "description": "Commit id"},
                         "confidence": {"type": "string", "enum": LEVELS},
-                        "reason": {"type": "string", "description": "Why this commit and not an earlier one"},
+                        "reason": {
+                            "type": "string",
+                            "description": "One sentence: what this commit changed that created the defect",
+                        },
                     },
                     "required": ["commit", "confidence", "reason"],
                 },
                 "regression": {"type": "boolean", "description": "It worked in an earlier release"},
                 "priority": {"type": "string", "enum": PRIORITIES},
-                "priority_reason": {"type": "string"},
+                "priority_reason": {"type": "string", "description": "One short clause: what breaks, for whom"},
                 "labels": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -105,12 +122,15 @@ TRIAGE_TOOL = {
                 "questions": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "What the reporter should add; required for needs_info",
+                    "description": "What the reporter should add, one short question each; required for needs_info",
                 },
                 "fix": {
                     "type": "object",
                     "properties": {
-                        "description": {"type": "string"},
+                        "description": {
+                            "type": "string",
+                            "description": "One sentence saying what to change; put code in patch, not here",
+                        },
                         "patch": {"type": "string", "description": "A unified diff, only when small and certain"},
                     },
                     "required": ["description"],
@@ -251,6 +271,7 @@ def parse_triage(
                 file=path,
                 line=int(line) if isinstance(line, int) and line > 0 else 0,
                 explanation=_text(c.get("explanation")),
+                evidence=_text(c.get("evidence")),
             )
     if verdict in ("confirmed", "plausible") and cause is None and not errors:
         errors.append(f"a {verdict} verdict needs a cause with the file that has the defect")

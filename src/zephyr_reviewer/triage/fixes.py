@@ -165,13 +165,13 @@ COMPARISON_TOOL = {
                             },
                             "assessment": {
                                 "type": "string",
-                                "description": "One or two sentences: what the pull request changes, and how "
-                                "that stands against the cause found",
+                                "description": "One plain sentence: what the pull request changes, and how that "
+                                "stands against the cause found. No file names or line numbers.",
                             },
                             "concerns": {
                                 "type": "string",
-                                "description": "What the pull request leaves open or gets wrong with respect to "
-                                "this issue, if anything; empty otherwise",
+                                "description": "One sentence: what the pull request leaves open or gets wrong with "
+                                "respect to this issue, if anything; empty otherwise",
                             },
                         },
                         "required": ["number", "relation", "assessment"],
