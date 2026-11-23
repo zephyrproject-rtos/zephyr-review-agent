@@ -1027,6 +1027,119 @@ def test_the_cases_beyond_the_single_ones_share_one_run_or_runs_of_a_few_each():
     assert spread(0, max_single=-1) == [] and spread(0, max_single=0, batch=3) == []  # and none is none
 
 
+def test_a_case_rated_below_the_floor_for_a_run_of_its_own_shares_one():
+    from zephyr_reviewer.review.pipeline import (
+        Concern,
+        HardCase,
+        batch_hard_cases,
+        below_floor,
+        draft_severity,
+        merge_concern,
+    )
+
+    sev = {"C1": "high", "C2": "low", "C3": "medium", "C4": "suggestion", "C5": "Low", "C6": "", "C7": "low"}
+    concerns = {k: Concern(k, "logic", {"title": k, "severity": v}) for k, v in sev.items()}
+    concerns["X1"] = Concern("X1", "external", {"title": "an earlier comment", "severity": "low"})
+
+    def case(n: int, *ids: str) -> HardCase:
+        return HardCase(f"H{n}", list(ids), "q", "medium")
+
+    # A case is rated as its highest concern; an unknown rating counts as medium.
+    assert draft_severity(case(1, "C2", "C1"), concerns) == "high" and draft_severity(case(1, "C5"), concerns) == "low"
+    assert draft_severity(case(1, "C6"), concerns) == "medium"
+    # A dismissal in a case does not rate it: the case is rated by its concerns.
+    assert draft_severity(case(1, "C2", "D1"), concerns) == "low" and below_floor(
+        case(1, "C2", "D1"), "medium", concerns
+    )
+    # A case with no concern, or with a comment of an earlier review, has no draft rating: no floor applies.
+    assert draft_severity(case(1, "D1"), concerns) is None and draft_severity(case(1, "C2", "X1"), concerns) is None
+    # A concern that two passes raised keeps the first one's text, and counts with the higher of their ratings.
+    merged: list[Concern] = []
+    for origin, rating in (("logic@a", "low"), ("logic@b", "high"), ("security@a", "")):
+        merge_concern(merged, {"file": "a.c", "title": "Lock leak", "problem": "p", "severity": rating}, origin)
+    assert len(merged) == 1 and merged[0].data["severity"] == "low" and merged[0].ratings == ["low", "high", ""]
+    by_id = {merged[0].id: merged[0]}
+    assert draft_severity(case(1, merged[0].id), by_id) == "high" and not below_floor(
+        case(1, merged[0].id), "medium", by_id
+    )
+    merged[0].ratings = ["low", "suggestion"]
+    assert below_floor(case(1, merged[0].id), "medium", by_id)
+    assert below_floor(case(1, "C2", "C4"), "medium", concerns) and not below_floor(
+        case(1, "C2", "C3"), "medium", concerns
+    )
+    assert not below_floor(case(1, "C2"), "low", concerns) and below_floor(case(1, "C4"), "low", concerns)
+    assert not below_floor(case(1, "C4"), "", concerns) and not below_floor(case(1, "C4"), "nonsense", concerns)
+    assert not below_floor(case(1, "D1"), "critical", concerns) and not below_floor(case(1, "X1"), "critical", concerns)
+
+    cases = [case(1, "C1"), case(2, "C3"), case(3, "C2"), case(4, "C4"), case(5, "C7")]
+
+    def spread(max_single: int, floor: str, batch: int = 0) -> list[list[str]]:
+        batches = batch_hard_cases(cases, max_single, batch, alone=lambda h: not below_floor(h, floor, concerns))
+        assert sorted(h.id for b in batches for h in b) == [h.id for h in cases]  # every case once
+        return [[h.id for h in b] for b in batches]
+
+    assert spread(8, "") == [["H1"], ["H2"], ["H3"], ["H4"], ["H5"]]
+    # Few enough for a run each, but three are rated below medium: those share one, in their order.
+    assert spread(8, "medium") == [["H1"], ["H2"], ["H3", "H4", "H5"]]
+    assert spread(8, "medium", batch=2) == [["H1"], ["H2"], ["H3", "H4"], ["H5"]]
+    assert spread(8, "low") == [["H1"], ["H2"], ["H3"], ["H5"], ["H4"]]  # one such case alone still gets the run
+    # More cases than runs: the one that would have been single but is rated too low gives its place up.
+    assert spread(3, "") == [["H1"], ["H2"], ["H3", "H4", "H5"]]
+    assert spread(4, "medium") == [["H1"], ["H2"], ["H3", "H4", "H5"]]
+    assert spread(2, "high") == [["H1"], ["H2", "H3", "H4", "H5"]]
+
+
+async def test_hard_cases_rated_below_the_floor_are_not_decided(mini_repo):
+    intel = SourceIntel(str(mini_repo["root"]), mini_repo["head"], mini_repo["base"])
+    pr = PullRequest(7, "t", "", "author", "main", mini_repo["base"], "pr", mini_repo["head"], "o/r", False)
+    opening = opening_message(pr, intel.overview(), intel.diff_text, "", "o/r")
+
+    async def run(floor: str):
+        router = StageRouter(verification_first_attempt_bad=False)
+        logged: list[str] = []
+        cheap = _llm(ScriptedOpenRouter([]), models=("cheap/model",))
+        strong = _llm(ScriptedOpenRouter([]), models=("strong/model",))
+        for llm in (cheap, strong):
+            llm._client = httpx.Client(transport=httpx.MockTransport(router.handler))
+        async with ToolBridge(build_server(intel)) as bridge:
+            result = await run_pipeline(
+                cheap,
+                strong,
+                bridge,
+                system_prompt(load_profile("zephyr"), "English"),
+                opening,
+                {f.path: f.new_side_lines for f in intel.files},
+                changed_files=[f.path for f in intel.files],
+                added_text=hunk_text(intel.diff_text),
+                hard_case_min_severity=floor,
+                log=logged.append,
+            )
+        hard = [r for r in router.requests if "submit_hard_case_verdict" in {t["function"]["name"] for t in r["tools"]}]
+        return result, len(hard), logged
+
+    # The scripted verification sends two concerns to hard cases: C3, rated medium, and C1, rated low.
+    result, hard, logged = await run("")
+    fates = {c["id"]: c for c in result.review_map["concerns"]}
+    assert hard == 2 and fates["C1"]["fate"] == "refuted" and fates["C3"]["fate"] == "confirmed"
+    assert not any("not decided" in m for m in logged)
+
+    result, hard, logged = await run("medium")
+    fates = {c["id"]: c for c in result.review_map["concerns"]}
+    assert hard == 1 and fates["C3"]["fate"] == "confirmed" and fates["C3"]["by"] == "H1"
+    assert (fates["C1"]["fate"], fates["C1"]["by"]) == ("skipped", "hard_case_min_severity")
+    assert fates["C1"]["note"] == "rated low by the draft model, below medium; not verified, not reported"
+    assert [s["stage"] for s in result.stages if s["stage"].startswith("H")] == ["H1"]
+    assert any("1 hard case(s) not decided" in m and "H2" in m for m in logged)
+    # What verification confirmed on its own is reported as before, and nothing is left unaccounted.
+    assert "Early return leaks the bus lock" in [f.title for f in result.review.findings]
+    assert "Commit message does not mention the Kconfig symbol" not in [f.title for f in result.review.findings]
+    assert all(c["fate"] != "unaccounted" for c in result.review_map["concerns"])
+
+    # A floor at the rating of the lowest case leaves all of them in.
+    result, hard, logged = await run("low")
+    assert hard == 2 and not any("not decided" in m for m in logged)
+
+
 async def test_a_long_tail_of_hard_cases_is_decided_in_several_shared_runs(mini_repo):
     router = BatchRouter(verification_first_attempt_bad=False)
     intel = SourceIntel(str(mini_repo["root"]), mini_repo["head"], mini_repo["base"])

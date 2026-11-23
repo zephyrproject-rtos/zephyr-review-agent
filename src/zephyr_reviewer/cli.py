@@ -596,6 +596,8 @@ async def _run(
                 hard_case_max_steps=cfg.hard_case_max_steps,
                 max_hard_cases=cfg.max_hard_cases,
                 hard_case_batch=cfg.hard_case_batch,
+                hard_case_min_severity=cfg.hard_case_min_severity,
+                single_hard_case_min_severity=cfg.single_hard_case_min_severity,
                 ensemble=ensemble,
                 claims=claims,
                 prune=(lambda review: drop_dismissed(review, dismissed, log)) if dismissed else None,

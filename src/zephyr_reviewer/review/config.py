@@ -10,6 +10,7 @@ import os
 from dataclasses import dataclass, field
 
 from .policy import LOCKDOWN_LEVELS, PUBLISH_MODES, Policy
+from .schema import SEVERITIES
 
 SEVERITY_RANK = {"none": 0, "suggestion": 1, "low": 2, "medium": 3, "high": 4, "critical": 5}
 
@@ -27,6 +28,14 @@ def _bool(v: str | bool | None, default: bool) -> bool:
     if isinstance(v, bool):
         return v
     return v.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _severity(name: str) -> str:
+    """A severity floor from the environment: one of the severities, or empty for none."""
+    v = _env(name).strip().lower()
+    if v and v not in SEVERITIES:
+        raise ValueError(f"{name} must be one of {', '.join(SEVERITIES)} or empty, not {v!r}")
+    return v
 
 
 def _list(v: str) -> list[str]:
@@ -58,6 +67,8 @@ class ReviewConfig:
     hard_case_max_steps: int = 20
     max_hard_cases: int = 8
     hard_case_batch: int = 0  # cases one shared run decides at most, beyond max_hard_cases; 0: all of them
+    hard_case_min_severity: str = ""  # hard cases rated below it by the draft models are not decided ("": all are)
+    single_hard_case_min_severity: str = ""  # ... below it get no run of their own, only the shared one
     specialists: list[str] = field(default_factory=list)  # empty: planned from the change
     temperature: float = 0.1
     max_tokens: int = 8000
@@ -138,6 +149,8 @@ class ReviewConfig:
         cfg.hard_case_max_steps = int(_env("hard_case_max_steps", str(cfg.hard_case_max_steps)))
         cfg.max_hard_cases = int(_env("max_hard_cases", str(cfg.max_hard_cases)))
         cfg.hard_case_batch = int(_env("hard_case_batch", str(cfg.hard_case_batch)))
+        cfg.hard_case_min_severity = _severity("hard_case_min_severity")
+        cfg.single_hard_case_min_severity = _severity("single_hard_case_min_severity")
         cfg.specialists = _list(_env("specialists"))
         cfg.verify_max_steps = int(_env("verify_max_steps", str(cfg.verify_max_steps)))
         cfg.dossier_chars = int(_env("dossier_chars", str(cfg.dossier_chars)))

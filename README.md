@@ -215,7 +215,11 @@ for automation.
    (the rest share one run, or runs of at most `hard_case_batch` cases when that is set, and are
    still decided one by one, each with its own reason), each with tools and its own budget,
    confirming with a complete finding or refuting with evidence. An undecided case is kept as
-   speculative rather than lost.
+   speculative rather than lost. Hard cases are the larger part of what the verification model
+   costs, and many of them are about concerns that every draft model rated low:
+   `single_hard_case_min_severity` sends cases rated below it to the shared run, and
+   `hard_case_min_severity` leaves cases rated below it undecided and unreported
+   (`review_map.json` records them as `skipped`).
 5. **Report**, without tools: summary, verdict and the issue-only assessments; the findings are
    fixed, and the verdict is forced to `request_changes` when a high or critical finding stands.
 

@@ -240,6 +240,18 @@ def test_opening_message_frames_untrusted_text():
     assert "<pr_discussion>\ndigest text\n</pr_discussion>" in text
 
 
+def test_severity_floors_for_hard_cases_are_read_from_the_environment(monkeypatch):
+    assert ReviewConfig.from_env().hard_case_min_severity == ""
+    assert ReviewConfig.from_env().single_hard_case_min_severity == ""
+    monkeypatch.setenv("INPUT_HARD_CASE_MIN_SEVERITY", " Medium ")
+    monkeypatch.setenv("INPUT_SINGLE_HARD_CASE_MIN_SEVERITY", "high")
+    cfg = ReviewConfig.from_env()
+    assert (cfg.hard_case_min_severity, cfg.single_hard_case_min_severity) == ("medium", "high")
+    monkeypatch.setenv("INPUT_HARD_CASE_MIN_SEVERITY", "important")
+    with pytest.raises(ValueError, match="hard_case_min_severity must be one of critical, high, medium"):
+        ReviewConfig.from_env()
+
+
 def test_draft_ensemble_is_read_from_the_environment_and_selects_multi_stage(monkeypatch):
     monkeypatch.setenv("INPUT_DRAFT_MODEL", "cheap/a")
     monkeypatch.setenv("INPUT_DRAFT_ENSEMBLE", "cheap/a, cheap/b ,other/c")

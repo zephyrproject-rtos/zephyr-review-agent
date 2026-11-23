@@ -122,6 +122,7 @@ class Concern:
     stage: str
     data: dict[str, Any]  # finding-shaped
     raised_by: list[str] = field(default_factory=list)  # "stage" or "stage@model" for every pass that raised it
+    ratings: list[str] = field(default_factory=list)  # the severity each of those passes gave it, in that order
 
     @property
     def title(self) -> str:
@@ -147,10 +148,13 @@ def merge_concern(concerns: list[Concern], data: dict[str, Any], raised_by: str)
     for c in concerns:
         if concern_key(c.data) == key:
             c.raised_by.append(raised_by)
+            c.ratings.append(str(data.get("severity") or ""))
             if data.get("evidence") and str(data["evidence"]) not in str(c.data.get("evidence") or ""):
                 c.data["evidence"] = f"{c.data.get('evidence') or ''} | {data['evidence']}".strip(" |")
             return c
-    c = Concern(f"C{len(concerns) + 1}", raised_by.split("@", 1)[0], data, [raised_by])
+    c = Concern(
+        f"C{len(concerns) + 1}", raised_by.split("@", 1)[0], data, [raised_by], [str(data.get("severity") or "")]
+    )
     concerns.append(c)
     return c
 
@@ -781,18 +785,47 @@ async def primed(primer: Primer | None, run: Callable[[Callable[[], None] | None
         primer.release()
 
 
-def batch_hard_cases(cases: list[HardCase], max_single: int, batch: int) -> list[list[HardCase]]:
+def draft_severity(case: HardCase, concerns: dict[str, Concern]) -> str | None:
+    """The highest severity any draft model gave any concern of the case. A concern that several passes raised
+    keeps the text of the first, but every one of their ratings counts here. An unknown rating counts as
+    medium. None for a case that a severity floor is not for: one that holds no concern, only dismissals that
+    verification doubts, and one that holds a comment of an earlier review, which the case is there to settle."""
+    found = []
+    for sid in case.source_ids:
+        c = concerns.get(sid)
+        if c is None:
+            continue  # a dismissal: another pass saw no problem there, which is no reason to rate the case higher
+        if c.stage == "external":
+            return None
+        for rating in c.ratings or [str(c.data.get("severity") or "")]:
+            sev = rating.strip().lower()
+            found.append(sev if sev in SEVERITIES else "medium")
+    return min(found, key=SEVERITIES.index) if found else None
+
+
+def below_floor(case: HardCase, floor: str, concerns: dict[str, Concern]) -> bool:
+    """Whether every rating a draft model gave a concern of the case is below ``floor``."""
+    sev = draft_severity(case, concerns)
+    return floor in SEVERITIES and sev is not None and SEVERITIES.index(sev) > SEVERITIES.index(floor)
+
+
+def batch_hard_cases(
+    cases: list[HardCase], max_single: int, batch: int, alone: Callable[[HardCase], bool] | None = None
+) -> list[list[HardCase]]:
     """How the hard cases are spread over agent runs. Up to ``max_single`` cases get a run each. With more,
     the first ``max_single - 1`` do, and the rest share one run, or runs of at most ``batch`` cases when
-    ``batch`` is above zero.
+    ``batch`` is above zero. A case that ``alone`` turns down is never among those with a run each: it
+    shares, also when the cases are few.
 
     A shared run has the step budget of a single case, so the number of cases in it decides how much each
     gets looked at, and every further run is paid for at the price of the verification model. One run for
     all of the rest is the cheapest and the default; on a large change it holds twenty or more cases."""
-    if len(cases) <= max_single:
+    eligible = [h for h in cases if alone is None or alone(h)]
+    if len(cases) <= max_single and len(eligible) == len(cases):
         return [[h] for h in cases]
-    single = cases[: max(max_single - 1, 0)]
-    rest = cases[len(single) :]
+    single = eligible[: max(max_single - 1, 0)]
+    taken = {id(h) for h in single}
+    rest = [h for h in cases if id(h) not in taken]
     size = batch if batch > 0 else max(len(rest), 1)
     return [[h] for h in single] + [rest[i : i + size] for i in range(0, len(rest), size)]
 
@@ -836,6 +869,8 @@ async def run_pipeline(
     report_max_steps: int = 6,
     max_hard_cases: int = 8,
     hard_case_batch: int = 0,
+    hard_case_min_severity: str = "",
+    single_hard_case_min_severity: str = "",
     max_context_tokens: int = 160_000,
     max_seconds: float = 0,
     extra_tools: list[LocalTool] | None = None,
@@ -1101,7 +1136,30 @@ async def run_pipeline(
 
         # 3. Hard cases, in parallel, highest severity first; the tail shares one run, or a few if so set.
         cases = sorted(verification.hard_cases, key=lambda h: hard_case_order(h, by_c))
-        batches = batch_hard_cases(cases, max_hard_cases, hard_case_batch)
+        # Most concerns are ones their own draft model rated low, most of those end up here, and most are then
+        # refuted, each at the price of a run of the verification model. A floor leaves them undecided and
+        # unreported; what verification confirmed without a hard case is not affected.
+        skipped = [h for h in cases if below_floor(h, hard_case_min_severity, by_c)]
+        if skipped:
+            cases = [h for h in cases if not below_floor(h, hard_case_min_severity, by_c)]
+            for h in skipped:
+                for sid in h.source_ids:
+                    fates[sid] = {
+                        "fate": "skipped",
+                        "by": "hard_case_min_severity",
+                        "note": f"rated {draft_severity(h, by_c)} by the draft model, below "
+                        f"{hard_case_min_severity}; not verified, not reported",
+                    }
+            log(
+                f"{len(skipped)} hard case(s) not decided, every concern in them rated below "
+                f"{hard_case_min_severity} by its draft model: {', '.join(h.id for h in skipped)}"
+            )
+        batches = batch_hard_cases(
+            cases,
+            max_hard_cases,
+            hard_case_batch,
+            alone=lambda h: not below_floor(h, single_hard_case_min_severity, by_c),
+        )
         system = base_system + "\n\n" + _stage_prompt("hard_case") + "\n\n" + guides
         # Single cases share system prompt, tools and opening: one goes first and the rest read them cached.
         case_primer = Primer() if prime and sum(1 for b in batches if len(b) == 1) > 1 else None
