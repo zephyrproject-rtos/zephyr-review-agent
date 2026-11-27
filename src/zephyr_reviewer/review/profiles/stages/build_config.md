@@ -15,5 +15,9 @@ Look for:
   that existing boards lack, compatible or include changes that alter existing nodes; check users
   with `dt_binding` and `search`.
 - Board and SoC definitions: identifiers, variants, defconfig changes that affect other boards.
+- Test metadata: a new bsim test image (an overlay, or a `tests.yaml` scenario of its own) for tests
+  that an existing image of the suite could run, because their Kconfig and other global state do not
+  conflict with it. `doc/develop/test/bsim.rst` (Test images) asks for tests to share an image where
+  they can: each image adds CI build time.
 
 State which configuration or board exposes each problem.
