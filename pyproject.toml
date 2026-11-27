@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zephyr-reviewer"
-version = "0.1.0"
+version = "0.7.0"
 description = "Source intelligence for the Zephyr tree over MCP, and an OpenRouter-backed review agent that uses it."
 readme = "README.md"
 license = "Apache-2.0"
